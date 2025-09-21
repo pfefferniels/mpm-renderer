@@ -1,0 +1,49 @@
+# Build output
+/build/
+/out/
+/bin/
+
+# Gradle cache & wrapper files
+/.gradle/
+/.gradle-cache/
+/.gradle/  
+**/build/
+
+# Gradle wrapper JAR & properties (should be checked in)
+!gradle/wrapper/gradle-wrapper.jar
+!gradle/wrapper/gradle-wrapper.properties
+!gradlew
+!gradlew.bat
+
+# IDE files
+# VS Code
+.vscode/
+.classpath
+.project
+.settings/
+
+# IntelliJ IDEA
+.idea/
+*.iml
+*.ipr
+*.iws
+
+# macOS
+.DS_Store
+
+# Logs
+*.log
+
+# Temporary files
+*.tmp
+*.swp
+*~
+
+# Ignore generated files
+*.mid
+*.mpm
+*.msm
+
+# Keep externals/meico.jar but ignore everything else in externals
+externals/*
+!externals/meico.jar

@@ -43,6 +43,7 @@
 *.mid
 *.mpm
 *.msm
+ranges.json
 
 # Keep externals/meico.jar but ignore everything else in externals
 externals/*

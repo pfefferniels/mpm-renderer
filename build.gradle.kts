@@ -1,21 +1,12 @@
-plugins {
-    application
-}
+plugins { /* no root plugins */ }
 
-repositories {
-    mavenCentral()
-}
+subprojects {
+    repositories { mavenCentral() }
+    apply(plugin = "java")
 
-dependencies {
-    implementation("com.fasterxml.jackson.core:jackson-databind:2.17.1")
-    implementation(files("externals/meico.jar"))
+    tasks.withType<JavaCompile> {
+        options.encoding = "UTF-8"
+        sourceCompatibility = "17"
+        targetCompatibility = "17"
+    }
 }
-
-application {
-    mainClass.set("MeicoServer")
-}
-
-tasks.withType<JavaCompile> {
-    options.encoding = "UTF-8"
-}
-

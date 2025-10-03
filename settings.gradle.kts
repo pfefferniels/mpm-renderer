@@ -1,1 +1,2 @@
-rootProject.name = "meico-server"
+rootProject.name = "meico-tools"
+include("core", "server", "cli")

@@ -14,8 +14,6 @@ package meicotools.core;
 //   }
 // }
 
-import java.io.File;
-import java.io.IOException;
 import java.util.*;
 import java.util.function.Consumer;
 
@@ -66,9 +64,7 @@ public class ModifyService {
     public Double relativeDuration;
   }
 
-  public static void modify(File in, File out, ModifyParams params) throws Exception {
-    Mpm mpm = new Mpm(in);
-
+  public static void modify(Mpm mpm, ModifyParams params) throws Exception {
     if (params.increase != null) {
       if (params.increase.tempo != null) {
         applyTempoScale(mpm, params.increase.tempo);
@@ -90,12 +86,6 @@ public class ModifyService {
       // TODO
       // dynamics, dynamicsGradient, relativeVelocity, relativeDuration
     }
-
-    // Write result
-    if (!mpm.writeMpm(out.getAbsolutePath())) {
-      throw new IOException("Failed to write MPM to " + out);
-    }
-    System.out.println("Wrote modified MPM to: " + out.getAbsolutePath());
   }
 
   // Apply (f + 1) scaling around mean for tempo transitions with bpm & transitionTo present.

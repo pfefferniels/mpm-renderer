@@ -1,5 +1,6 @@
 package meicotools.core;
 
+import meico.mei.Helper;
 import meico.mei.Mei;
 import meico.msm.Msm;
 import meico.mpm.Mpm;
@@ -7,10 +8,20 @@ import meico.mpm.elements.Dated;
 import meico.mpm.elements.Global;
 import meico.mpm.elements.Part;
 import meico.mpm.elements.Performance;
+import meico.mpm.elements.maps.DynamicsMap;
 import meico.mpm.elements.maps.GenericMap;
+import meico.mpm.elements.maps.MetricalAccentuationMap;
+import meico.mpm.elements.maps.MovementMap;
+import meico.mpm.elements.maps.RubatoMap;
+import meico.mpm.elements.maps.TempoMap;
+import meico.mpm.elements.maps.data.DynamicsData;
+import meico.mpm.elements.maps.data.MetricalAccentuationData;
+import meico.mpm.elements.maps.data.RubatoData;
+import meico.mpm.elements.maps.data.TempoData;
 import meico.midi.Midi;
 import meico.supplementary.KeyValue;
-
+import meicotools.core.ModifyService.Exaggerate;
+import meicotools.core.ModifyService.ModifyParams;
 import nu.xom.Element;
 import nu.xom.Nodes;
 import nu.xom.Attribute;
@@ -27,14 +38,253 @@ import java.util.stream.Collectors;
  *   - Converts MEI → MSM (per movement) and reads MPM.
  *   - Applies Performance to MSM to get an expressive MSM.
  *   - If ids were passed:
- *       * Removes notes not in the set (by checking note's reference to original MEI id, e.g., "mei.id").
+ *       * Removes notes not in the set
  *       * Shifts all remaining notes' "milliseconds.date" so earliest selected note starts at t=0.
  *   - Exports expressive MIDI from the expressive MSM.
  */
 public class PerformService {
-    public static void perform(File meiFile, File mpmFile, File rangesFile, File outFile, String[] ids, int ppq, int movementIndex) throws Exception {
+    private static double[] isolateMPM(
+        Performance performance,
+        Set<String> mpmIDs
+    ) {
+        System.out.println("Isolating MPM elements by xml:id, count=" + mpmIDs.size());
+
+        // Find all dated elements and keep only those whose xml:id is in mpmIDs
+        final String XML_NS = "http://www.w3.org/XML/1998/namespace";
+        Nodes candidates = performance.getXml().query("descendant::*[@date]");
+        List<Element> selectedElements = new ArrayList<>();
+        for (int i = 0; i < candidates.size(); i++) {
+            Element el = (Element) candidates.get(i);
+            String xmlId = firstNonNull(
+                el.getAttributeValue("id", XML_NS),
+                el.getAttributeValue("xml:id")
+            );
+            if (xmlId != null && mpmIDs.contains(xmlId)) {
+                selectedElements.add(el);
+            }
+        }
+        System.out.println("Found " + selectedElements.size() + " matching elements.");
+
+        // Find the element with the smallest date
+        double minDate = Double.POSITIVE_INFINITY;
+        double maxDate = 0.0;
+
+        for (Element el : selectedElements) {
+            String dateStr = el.getAttributeValue("date");
+            if (dateStr != null) {
+            try {
+                double d = Double.parseDouble(dateStr);
+                if (d < minDate) {
+                    minDate = d;
+                }
+                if (d > maxDate) {
+                    maxDate = d;
+                }
+            } catch (Exception ignore) {}
+            }
+        }
+
+        // 1) Deal with <tempo>
+        {
+            TempoMap tempoMap = (TempoMap) performance.getGlobal().getDated().getMap(Mpm.TEMPO_MAP);
+            tempoMap.sort();
+
+            int avgTempo = 60;
+            if (!tempoMap.isEmpty()) {
+                for (int i=0; i<tempoMap.size(); i++) {
+                    TempoData td = tempoMap.getTempoDataOf(i);
+                    if (td.isConstantTempo()) {
+                        avgTempo += td.bpm * td.beatLength * 4;
+                    }
+                    else {
+                        double meanTempoAt = td.meanTempoAt == null ? 0.5 : td.meanTempoAt;
+                        double frameMean = tempoMap.getTempoAt(td.startDate + meanTempoAt * (td.endDate - td.startDate));
+                        avgTempo += frameMean * td.beatLength * 4;
+                    }
+                }
+                avgTempo /= tempoMap.size();
+            }
+
+            ArrayList<Integer> toRemove = new ArrayList<>();
+            for (int i=0; i<tempoMap.size(); i++) {
+                if (!mpmIDs.contains(tempoMap.getTempoDataOf(i).xmlId)) {
+                    toRemove.add(i);
+                }
+            }
+
+            // We need to avoid removing the last tempo data,
+            // since otherwise the last selected tempo might
+            // stretch to another end date than originally intended.
+            // This is only relevant if we are not removing all tempo data. 
+            if (toRemove.size() > 0 && toRemove.size() < tempoMap.size()) {
+                toRemove.remove(toRemove.size() - 1);
+            }
+
+            Collections.reverse(toRemove);
+            for (int idx : toRemove) {
+                tempoMap.removeElement(idx);
+            }
+
+            if (tempoMap.isEmpty() || tempoMap.getTempoDataOf(0).startDate > minDate) {
+                tempoMap.addTempo(minDate, Double.toString(avgTempo), 0.25);
+                tempoMap.sort();
+            }
+
+            // the last tempo data should be the one which we left in place
+            // and it should have the same date as the originally intended end date.
+            for (int i=0; i<tempoMap.size(); i++) {
+                System.out.println("Tempo entry " + i + ": startId=" + tempoMap.getTempoDataOf(i).startDate);
+            }
+            maxDate = Math.max(maxDate, tempoMap.getTempoDataOf(tempoMap.size() - 1).startDate);
+        }
+
+        // 2) Deal with dynamics
+        {
+            DynamicsMap dynamicsMap = (DynamicsMap) performance.getGlobal().getDated().getMap(Mpm.DYNAMICS_MAP);
+            dynamicsMap.sort();
+
+            int avgVolume = 60;
+            if (!dynamicsMap.isEmpty()) {
+                for (int i=0; i<dynamicsMap.size(); i++) {
+                    DynamicsData dd = dynamicsMap.getDynamicsDataOf(i);
+                    if (dd.isConstantDynamics()) {
+                        avgVolume += dd.volume;
+                    }
+                    else {
+                        double frameMean = (dd.transitionTo + dd.volume) / 2.0;
+                        avgVolume += frameMean;
+                    }
+                }
+            }
+            avgVolume /= dynamicsMap.size();
+
+            ArrayList<Integer> toRemove = new ArrayList<>();
+            for (int i=0; i<dynamicsMap.size(); i++) {
+                if (!mpmIDs.contains(dynamicsMap.getDynamicsDataOf(i).xmlId)) {
+                    toRemove.add(i);
+                }
+            }
+
+            // We need to avoid removing the last dynamics data,
+            // since otherwise the last selected tempo might
+            // stretch to another end date than originally intended.
+            if (toRemove.size() > 0 && toRemove.size() < dynamicsMap.size()) {
+                toRemove.remove(toRemove.size() - 1);
+            }
+
+            Collections.reverse(toRemove);
+            for (int idx : toRemove) {
+                dynamicsMap.removeElement(idx);
+            }
+
+            if (dynamicsMap.isEmpty() || dynamicsMap.getDynamicsDataOf(0).startDate > minDate) {
+                dynamicsMap.addDynamics(minDate, Double.toString(avgVolume));
+            }
+
+            // the last dynamics data should be the one which we left in place
+            // and it should have the same date as the originally intended end date.
+            maxDate = Math.max(maxDate, dynamicsMap.getDynamicsDataOf(dynamicsMap.size() - 1).startDate);
+        }
+
+        // 2) Deal with movement
+        {
+            MovementMap movementMap = (MovementMap) performance.getGlobal().getDated().getMap(Mpm.MOVEMENT_MAP);
+            movementMap.sort();
+
+            ArrayList<Integer> toRemove = new ArrayList<>();
+            for (int i=0; i<movementMap.size(); i++) {
+                if (!mpmIDs.contains(movementMap.getMovementDataOf(i).xmlId)) {
+                    toRemove.add(i);
+                }
+            }
+
+            // We need to avoid removing the last tempo data,
+            // since otherwise the last selected tempo might
+            // stretch to another end date than originally intended.
+            if (toRemove.size() > 0 && toRemove.size() < movementMap.size()) {
+                toRemove.remove(toRemove.size() - 1);
+            }
+
+            Collections.reverse(toRemove);
+            for (int idx : toRemove) {
+                movementMap.removeElement(idx);
+            }
+
+            // the last dynamics data should be the one which we left in place
+            // and it should have the same date as the originally intended end date.
+            if (!movementMap.isEmpty()) {
+                maxDate = Math.max(maxDate, movementMap.getMovementDataOf(movementMap.size() - 1).startDate);
+            }
+        }
+
+        // 3) Deal with all other map types
+        String[] mapTypes = {
+            Mpm.ARTICULATION_MAP,
+            Mpm.METRICAL_ACCENTUATION_MAP,
+            Mpm.ORNAMENTATION_MAP,
+            Mpm.RUBATO_MAP
+        };
+
+        for (String mapType : mapTypes) {
+            GenericMap map = (GenericMap) performance.getGlobal().getDated().getMap(mapType);
+            if (map == null) continue;
+            map.sort();
+
+            ArrayList<Integer> toRemove = new ArrayList<>();
+            for (int i=0; i<map.size(); i++) {
+                Element el = map.getElement(i);
+                String xmlId = firstNonNull(
+                    el.getAttributeValue("id", XML_NS),
+                    el.getAttributeValue("xml:id")
+                );
+                if (xmlId == null || !mpmIDs.contains(xmlId)) {
+                    toRemove.add(i);
+                }
+            }
+            Collections.reverse(toRemove);
+            for (int idx : toRemove) {
+                map.removeElement(idx);
+            }
+
+            if (map.isEmpty()) continue;
+ 
+            if (mapType == Mpm.RUBATO_MAP) {
+                RubatoData rd = ((RubatoMap) map).getRubatoDataOf(map.size() - 1);
+                maxDate = Math.max(maxDate, rd.frameLength + rd.startDate);
+            }
+            else if (mapType == Mpm.METRICAL_ACCENTUATION_MAP) {
+                MetricalAccentuationData md = ((MetricalAccentuationMap) map).getMetricalAccentuationDataOf(map.size() - 1);
+                System.out.println("MetricalAccentuationMap has " + map.size() + " entries");
+                if (md == null) continue;
+                System.out.println("Last MetricalAccentuationData startDate=" + md.startDate + " length=" + md.accentuationPatternDef.getLength());
+
+                double length = (md.accentuationPatternDef.getLength() * 720 * 4) / 4.0; // 4.0 = denominator
+                maxDate = Math.max(maxDate, md.startDate + length);
+            }
+        }
+
+        return new double[] {minDate, maxDate};
+    }
+
+    public enum SelectionType {
+        NONE,
+        NOTE_IDS,
+        MPM_IDS
+    }
+
+    public static void perform(
+        File meiFile,
+        File mpmFile,
+        File rangesFile,
+        File outFile,
+        String[] selection,
+        SelectionType selectionType,
+        int ppq,
+        int movementIndex,
+        Double exaggerate 
+    ) throws Exception {
         Set<String> keepIds = Collections.emptySet();
-        keepIds = Arrays.stream(ids)
+        keepIds = Arrays.stream(selection)
                 .map(String::trim)
                 .filter(s -> !s.isEmpty())
                 .collect(Collectors.toCollection(LinkedHashSet::new));
@@ -71,14 +321,25 @@ public class PerformService {
             throw new IllegalStateException("No Performance found in MPM file.");
         }
 
+        if (exaggerate != null) {
+            ModifyParams params = new ModifyParams();
+            params.exaggerate = new Exaggerate();
+            params.exaggerate.tempo = exaggerate;
+            params.exaggerate.dynamics = exaggerate;
+            ModifyService.modify(mpm, params);
+        }
+
         // 4) Apply Performance → expressive MSM
         System.out.println("Applying performance to MSM ...");
         Msm expressiveMsm = performance.perform(msm);
 
         // 5) If ids were provided: filter and shift onsets
         if (!keepIds.isEmpty()) {
-            System.out.println("Filtering to " + keepIds.size() + " MEI ids and shifting onsets to first selected note...");
-            filterNotesByMeiIds(expressiveMsm, keepIds);
+            double[] range = selectionType == SelectionType.NOTE_IDS
+                ? getRangeForIDs(expressiveMsm, keepIds)
+                : isolateMPM(performance, keepIds);
+            System.out.println("Filtering to range" + Arrays.toString(range));
+            filterNotesByDate(expressiveMsm, range[0], range[1]);
             shiftOnsetsToFirstNote(expressiveMsm);
         }
 
@@ -141,9 +402,20 @@ public class PerformService {
         }
 
         // 6) Export expressive MIDI (attributes already present on expressiveMsm)
-        System.out.println("Exporting expressive MIDI ...");
+        System.out.println("Exporting expressive MSM to: " + outFile.getAbsolutePath() + ".msm");
 
         expressiveMsm.writeFile(outFile.getAbsolutePath() + ".msm");
+
+        // Make sure that we always use the MIDI channel 1. 
+        // Yamaha Disklavier expects this and ignores other channels.
+        for (Element part = expressiveMsm.getRootElement().getFirstChildElement("part"); part != null; part = Helper.getNextSiblingElement("part", part)) {
+            Attribute existing = part.getAttribute("midi.channel");
+            if (existing != null) {
+                System.out.println("Warning: Overriding existing midi.channel='" + existing.getValue() + "' with '0'");
+                part.removeAttribute(existing);
+            }
+            part.addAttribute(new Attribute("midi.channel", "0"));
+        }
 
         Midi midi = expressiveMsm.exportExpressiveMidi();
 
@@ -153,52 +425,190 @@ public class PerformService {
         System.out.println("Done.");
     }
 
-    private static void printUsageAndExit(String msg) {
-        if (msg != null && !msg.isEmpty()) System.err.println("Error: " + msg);
-        System.err.println("Usage:");
-        System.err.println("  java tools.Perform --mei <file.mei> --mpm <file.mpm> --out <out.midi>");
-        System.err.println("Options:");
-        System.err.println("  --ids <id1,id2,...>    Filter to given MEI xml:ids; shift onsets to first selected note");
-        System.err.println("  --ppq <int>            PPQ for MSM conversion (default 720)");
-        System.err.println("  --movement <int>       Movement index to render (default 0)");
-        System.err.println("  --ignore-expansions    Do not apply MEI expansion processing");
-        System.err.println("  --use-channel-10       Allow MIDI channel 10 (drums); default is to not use it");
-        System.err.println("  --soundfont <file>     SF2/SF3/DLS soundbank for synthesis");
-        System.exit(2);
-    }
+    public static void perform(
+        File meiFile,
+        File mpmFile,
+        File rangesFile,
+        File outFile,
+        String[] ids,
+        int ppq,
+        int movementIndex
+    ) throws Exception {
+        Set<String> keepIds = Collections.emptySet();
+        keepIds = Arrays.stream(ids)
+                .map(String::trim)
+                .filter(s -> !s.isEmpty())
+                .collect(Collectors.toCollection(LinkedHashSet::new));
+        if (keepIds.isEmpty()) {
+            System.out.println("Warning: --ids provided but parsed empty set; ignoring.");
+        }
 
-    private static Map<String, String> parseArgs(String[] args) {
-        Map<String, String> m = new LinkedHashMap<>();
-        for (int i = 0; i < args.length; i++) {
-            String a = args[i];
-            switch (a) {
-                case "--mei":
-                case "--mpm":
-                case "--out":
-                case "--ids":
-                case "--ranges":
-                case "--soundfont":
-                    if (i + 1 >= args.length) printUsageAndExit("Missing value for " + a);
-                    m.put(a.substring(2), args[++i]);
-                    break;
-                default:
-                    printUsageAndExit("Unknown arg: " + a);
+        // 1) Load MEI
+        System.out.println("Loading MEI: " + meiFile.getAbsolutePath());
+        Mei mei = new Mei(meiFile);
+
+        // 2) Convert MEI → MSM(+MPM) for all movements
+        System.out.println("Converting MEI to MSM");
+        KeyValue<List<Msm>, List<Mpm>> msmMpm = mei.exportMsmMpm(ppq);
+        List<Msm> msms = msmMpm.getKey();
+
+        if (msms.isEmpty()) {
+            throw new IllegalStateException("No MSM movements produced from MEI.");
+        }
+        if (movementIndex < 0 || movementIndex >= msms.size()) {
+            throw new IllegalArgumentException("Movement index out of range. Available: 0.." + (msms.size()-1));
+        }
+        Msm msm = msms.get(movementIndex);
+        System.out.println("Selected movement index: " + movementIndex);
+
+        msm.removeRests();
+        // msm.resolveSequencingMaps();
+
+        // 3) Load MPM and get Performance
+        System.out.println("Loading MPM: " + mpmFile.getAbsolutePath());
+        Mpm mpm = new Mpm(mpmFile); // Adjust to your API if different (e.g., Mpm.read(file))
+        Performance performance = mpm.getPerformance(0); // Or select the appropriate Performance by id/index
+        if (performance == null) {
+            throw new IllegalStateException("No Performance found in MPM file.");
+        }
+
+        // 4) Apply Performance → expressive MSM
+        System.out.println("Applying performance to MSM ...");
+        Msm expressiveMsm = performance.perform(msm);
+
+        // 5) If ids were provided: filter and shift onsets
+        if (!keepIds.isEmpty()) {
+            System.out.println("Filtering to " + keepIds.size() + " MEI ids and shifting onsets to first selected note...");
+            getRangeForIDs(expressiveMsm, keepIds);
+            shiftOnsetsToFirstNote(expressiveMsm);
+        }
+
+        ArrayList<GenericMap> maps = new ArrayList<GenericMap>();
+
+        ArrayList<Part> parts = performance.getAllParts();
+        for (Part part : parts) {
+            Dated dated = part.getDated();
+            maps.addAll(dated.getAllMaps().values());
+        }
+
+        Global global = performance.getGlobal();
+        Dated dated = global.getDated();
+        maps.addAll(dated.getAllMaps().values());
+
+        Map<String, Double[]> ranges = new HashMap<String, Double[]>();
+        for (GenericMap map : maps) {
+            for (KeyValue<Double, Element> entry : map.getAllElements()) {
+                Double date = entry.getKey();
+                Double phys = toPhysicalDate(date, expressiveMsm);
+                Double physEnd = null;
+                if (phys == null) continue;
+
+                String elementId = firstNonNull(
+                        entry.getValue().getAttributeValue("id", "http://www.w3.org/XML/1998/namespace"),
+                        entry.getValue().getAttributeValue("xml:id")
+                );
+                if (elementId == null) continue;
+
+                Attribute endDateAttr = entry.getValue().getAttribute("endDate");
+                if (endDateAttr != null) {
+                    try {
+                        Double endDate = Double.parseDouble(endDateAttr.getValue());
+                        physEnd = toPhysicalDate(endDate, expressiveMsm);
+                    } catch (Exception ignore) {}
+                }
+
+                Double[] result = new Double[] { phys, physEnd == null ? phys : physEnd };
+                ranges.put(elementId, result);
             }
         }
-        return m;
+        // Write ranges map as a JSON object to rangesFile using Jackson
+        java.util.Map<String, Object> outMap = new LinkedHashMap<>();
+        for (java.util.Map.Entry<String, Double[]> e : ranges.entrySet()) {
+            Double[] v = e.getValue();
+            outMap.put(e.getKey(), v);
+        }
+
+        java.io.File parent = rangesFile.getParentFile();
+        if (parent != null && !parent.exists()) parent.mkdirs();
+
+        ObjectMapper mapper = new ObjectMapper();
+        mapper.enable(SerializationFeature.INDENT_OUTPUT);
+
+        try {
+            mapper.writeValue(rangesFile, outMap);
+            System.out.println("Wrote ranges JSON to " + rangesFile.getAbsolutePath());
+        } catch (Exception ex) {
+            throw new RuntimeException("Failed to write ranges JSON to " + rangesFile, ex);
+        }
+
+        // 6) Export expressive MIDI (attributes already present on expressiveMsm)
+        System.out.println("Exporting expressive MSM to: " + outFile.getAbsolutePath() + ".msm");
+
+        expressiveMsm.writeFile(outFile.getAbsolutePath() + ".msm");
+
+        // Make sure that we always use the MIDI channel 1. 
+        // Yamaha Disklavier expects this and ignores other channels.
+        for (Element part = expressiveMsm.getRootElement().getFirstChildElement("part"); part != null; part = Helper.getNextSiblingElement("part", part)) {
+            Attribute existing = part.getAttribute("midi.channel");
+            if (existing != null) {
+                System.out.println("Warning: Overriding existing midi.channel='" + existing.getValue() + "' with '0'");
+                part.removeAttribute(existing);
+            }
+            part.addAttribute(new Attribute("midi.channel", "0"));
+        }
+
+        Midi midi = expressiveMsm.exportExpressiveMidi();
+
+        midi.writeMidi(outFile.getAbsolutePath());
+        System.out.println("Wrote MIDI: " + outFile.getAbsolutePath());
+
+        System.out.println("Done.");
     }
 
-    private static int parseIntOrDefault(String s, int def) {
-        if (s == null) return def;
-        try { return Integer.parseInt(s); } catch (Exception e) { return def; }
+    private static void filterNotesByDate(Msm msm, double minDate, double maxDate) {
+        Element root = msm.getRootElement();
+
+        Nodes datedNodes = root.query("descendant::*[@date]");
+        List<Element> toRemoveByDate = new ArrayList<>();
+        for (int i = 0; i < datedNodes.size(); i++) {
+            Element el = (Element) datedNodes.get(i);
+            String dateStr = el.getAttributeValue("date");
+            if (dateStr == null) continue;
+            try {
+                double d = Double.parseDouble(dateStr);
+                if (d > maxDate) {
+                    toRemoveByDate.add(el);
+                }
+            } catch (Exception ignore) {
+            }
+        }
+        for (Element e : toRemoveByDate) {
+            Element parent = (Element) e.getParent();
+            if (parent != null) parent.removeChild(e);
+        }
+        System.out.println("Removed " + toRemoveByDate.size() + " elements with date > maxDate (" + maxDate + ")");
+
+        Nodes sectionEnd = root.query("descendant::section[@date.end]");
+        for (int i = 0; i < sectionEnd.size(); i++) {
+            Element sec = (Element) sectionEnd.get(i);
+            String dateEndStr = sec.getAttributeValue("date.end");
+            if (dateEndStr == null) continue;
+            try {
+                double d = Double.parseDouble(dateEndStr);
+                if (d > maxDate) {
+                    sec.addAttribute(new Attribute("date.end", Double.toString(maxDate)));
+                }
+            } catch (Exception ignore) {
+            }
+        }
     }
 
     /**
      * Remove <note> elements whose reference to the original MEI xml:id is not in keepIds.
-     * Adjust the attribute keys ("mei.id", "mei.note.id", etc.) to match your MSM schema.
      */
-    private static void filterNotesByMeiIds(Msm msm, Set<String> keepIds) {
+    private static double[] getRangeForIDs(Msm msm, Set<String> keepIds) {
         Element root = msm.getRootElement();
+
         // XOM XPath search: find all note elements anywhere
         Nodes noteNodes = root.query("descendant::note");
         System.out.println("Total notes before filtering: " + noteNodes.size());
@@ -230,41 +640,11 @@ public class PerformService {
         Collections.sort(dates);
         Double minDate = dates.isEmpty() ? null : dates.get(0);
         Double maxDate = dates.isEmpty() ? null : dates.get(dates.size() - 1);
-        System.out.println("minDate: " + minDate + ", maxDate: " + maxDate);
 
-        Nodes datedNodes = root.query("descendant::*[@date]");
-        List<Element> toRemoveByDate = new ArrayList<>();
-        for (int i = 0; i < datedNodes.size(); i++) {
-            Element el = (Element) datedNodes.get(i);
-            String dateStr = el.getAttributeValue("date");
-            if (dateStr == null) continue;
-            try {
-                double d = Double.parseDouble(dateStr);
-                if (maxDate != null && d > maxDate) {
-                    toRemoveByDate.add(el);
-                }
-            } catch (Exception ignore) {
-            }
-        }
-        for (Element e : toRemoveByDate) {
-            Element parent = (Element) e.getParent();
-            if (parent != null) parent.removeChild(e);
-        }
-        System.out.println("Removed " + toRemoveByDate.size() + " elements with date > maxDate (" + maxDate + ")");
-
-        Nodes sectionEnd = root.query("descendant::section[@date.end]");
-        for (int i = 0; i < sectionEnd.size(); i++) {
-            Element sec = (Element) sectionEnd.get(i);
-            String dateEndStr = sec.getAttributeValue("date.end");
-            if (dateEndStr == null) continue;
-            try {
-                double d = Double.parseDouble(dateEndStr);
-                if (maxDate != null && d > maxDate) {
-                    sec.addAttribute(new Attribute("date.end", Double.toString(maxDate)));
-                }
-            } catch (Exception ignore) {
-            }
-        }
+        return new double[] {
+            minDate == null ? 0.0 : minDate,
+            maxDate == null ? 0.0 : maxDate
+        };
     }
 
     /**

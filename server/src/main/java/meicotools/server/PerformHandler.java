@@ -48,6 +48,16 @@ public class PerformHandler implements HttpHandler {
             writeString(meiFile, req.mei);
             writeString(mpmFile, req.mpm);
 
+            String[] selection =
+                req.ids != null
+                ? req.ids.toArray(new String[0])
+                : (req.mpmIds != null ? req.mpmIds.toArray(new String[0]) : new String[0]);
+            
+            PerformService.SelectionType selectionType =
+                req.ids != null
+                ? PerformService.SelectionType.NOTE_IDS
+                : (req.mpmIds != null ? PerformService.SelectionType.MPM_IDS : PerformService.SelectionType.NONE);
+
             // 3) Call service
             try {
                 PerformService.perform(
@@ -55,9 +65,11 @@ public class PerformHandler implements HttpHandler {
                         mpmFile,
                         rangesFile,
                         outMidi,
-                        req.ids != null ? req.ids.toArray(new String[0]) : new String[0],
+                        selection,
+                        selectionType,
                         req.ppq != null ? req.ppq : 720,
-                        req.movementIndex != null ? req.movementIndex : 0
+                        req.movementIndex != null ? req.movementIndex : 0,
+                        req.exaggerate
                 );
             } catch (Exception ex) {
                 ex.printStackTrace();
@@ -104,6 +116,8 @@ public class PerformHandler implements HttpHandler {
         public String mei;              // required
         public String mpm;              // required
         public List<String> ids;        // optional
+        public List<String> mpmIds;     // optional
+        public Double exaggerate;       // optional
         public Integer ppq;             // optional (default 720)
         public Integer movementIndex;   // optional (default 0)
     }

@@ -1,2 +1,2 @@
 rootProject.name = "meico-tools"
-include("core", "server", "cli")
+include("core", "server")

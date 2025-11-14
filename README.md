@@ -6,7 +6,7 @@ used either as a web service or from the command-line.
 To compile: 
 ```
 ./gradlew :server:shadowJar
-``´
+```
 
 To run: 
 ```

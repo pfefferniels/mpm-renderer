@@ -47,7 +47,7 @@ public class ConvertHandler implements HttpHandler {
             // 3) Convert MEI -> MSM
             Msm msm;
             try {
-                msm = convertService.meiToMsm(meiFile);
+                msm = convertService.meiToMsm(meiFile, 0);
             } catch (Exception ex) {
                 ex.printStackTrace();
                 sendText(exchange, 500, "Convert failed: " + ex.getMessage());

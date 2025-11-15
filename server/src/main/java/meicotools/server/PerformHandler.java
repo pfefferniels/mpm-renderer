@@ -5,13 +5,21 @@ import com.fasterxml.jackson.databind.ObjectMapper;
 import com.sun.net.httpserver.Headers;
 import com.sun.net.httpserver.HttpExchange;
 import com.sun.net.httpserver.HttpHandler;
+
+import meicotools.core.Isolation;
 import meicotools.core.PerformService;
+import meicotools.core.PerformService.SelectionType;
 
 import java.io.*;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
+import java.util.Arrays;
 import java.util.Base64;
+import java.util.Collections;
+import java.util.LinkedHashSet;
 import java.util.List;
+import java.util.Set;
+import java.util.stream.Collectors;
 
 public class PerformHandler implements HttpHandler {
 
@@ -52,12 +60,18 @@ public class PerformHandler implements HttpHandler {
                 req.ids != null
                 ? req.ids.toArray(new String[0])
                 : (req.mpmIds != null ? req.mpmIds.toArray(new String[0]) : new String[0]);
-            
+
+            Set<String> keepIds = Collections.emptySet();
+            keepIds = Arrays.stream(selection)
+                .map(String::trim)
+                .filter(s -> !s.isEmpty())
+                .collect(Collectors.toCollection(LinkedHashSet::new));
+
             PerformService.SelectionType selectionType =
                 req.ids != null
                 ? PerformService.SelectionType.NOTE_IDS
                 : (req.mpmIds != null ? PerformService.SelectionType.MPM_IDS : PerformService.SelectionType.NONE);
-
+            
             // 3) Call service
             try {
                 PerformService.perform(
@@ -65,8 +79,8 @@ public class PerformHandler implements HttpHandler {
                         mpmFile,
                         rangesFile,
                         outMidi,
-                        selection,
                         selectionType,
+                        keepIds,
                         req.ppq != null ? req.ppq : 720,
                         req.movementIndex != null ? req.movementIndex : 0,
                         req.exaggerate

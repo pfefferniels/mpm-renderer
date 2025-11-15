@@ -8,13 +8,13 @@ import meico.msm.Msm;
 
 public class ConvertService {
     /** Returns the first MSM from the export. */
-    public Msm meiToMsm(File meiFile) throws Exception {
-        try {
+    public static Msm meiToMsm(File meiFile, int movementIndex) throws Exception {
+        try { 
             Mei mei = new Mei(meiFile);
             if (mei.isEmpty()) throw new Exception("MEI file could not be loaded.");
             List<Msm> list = mei.exportMsm(720);
             if (list == null || list.isEmpty()) throw new Exception("No MSM generated.");
-            Msm result = list.get(0);
+            Msm result = list.get(movementIndex);
             result.removeRests();
             // result.resolveSequencingMaps();
             return result;

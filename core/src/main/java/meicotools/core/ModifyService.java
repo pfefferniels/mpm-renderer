@@ -1,18 +1,5 @@
 package meicotools.core;
 
-// params.json shape (missing keys are allowed):
-// {
-//   "increase": { "tempo": 0.5, "dynamics": 0.1 },
-//   "exaggerate": {
-//     "rubato": 0.4,
-//     "tempo": 0.2,
-//     "dynamics": 0.0,
-//     "temporalSpread": 0.2,
-//     "dynamicsGradient": 0.1,
-//     "relativeVelocity": 0.3,
-//     "relativeDuration": 0.25
-//   }
-// }
 
 import java.util.*;
 import java.util.function.Consumer;
@@ -34,14 +21,10 @@ import meico.mpm.elements.styles.GenericStyle;
 import meico.mpm.elements.styles.defs.OrnamentDef;
 import meico.mpm.elements.styles.defs.OrnamentDef.TemporalSpread;
 
-// nu.xom for attribute edits where needed
 import nu.xom.Element;
 import nu.xom.Attribute;
 
 public class ModifyService {
-
-  // ---------- JSON model ----------
-  @JsonIgnoreProperties(ignoreUnknown = true)
   public static class ModifyParams {
     public Increase increase;
     public Exaggerate exaggerate;
@@ -163,7 +146,6 @@ public class ModifyService {
     });
   }
 
-  // ---------- Traversal ----------
   private static void forEachDated(Mpm mpm, Consumer<Dated> visitor) {
     // global dated
     for (int i = 0; i < mpm.size(); i++) {
@@ -193,7 +175,6 @@ public class ModifyService {
     }
   }
 
-  // ---------- XML helpers ----------
   private static void setNumericAttr(Element xml, String name, double value) {
     Attribute a = xml.getAttribute(name);
     if (a == null) {

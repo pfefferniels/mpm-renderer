@@ -41,7 +41,6 @@
 
 # Ignore generated files
 *.mid
-*.mpm
 *.msm
 ranges.json
 

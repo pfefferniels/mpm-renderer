@@ -16,6 +16,7 @@ import meico.mpm.elements.maps.RubatoMap;
 import meico.mpm.elements.maps.TempoMap;
 import meico.mpm.elements.maps.data.DynamicsData;
 import meico.mpm.elements.maps.data.MetricalAccentuationData;
+import meico.mpm.elements.maps.data.MovementData;
 import meico.mpm.elements.maps.data.RubatoData;
 import meico.mpm.elements.maps.data.TempoData;
 import meico.midi.Midi;
@@ -43,13 +44,51 @@ import java.util.stream.Collectors;
  *   - Exports expressive MIDI from the expressive MSM.
  */
 public class PerformService {
+    private static double getAverageTempo(TempoMap tempoMap) {
+        if (tempoMap.isEmpty()) return 60.0;
+
+        double avgTempo = 0.0;
+        for (int i=0; i<tempoMap.size(); i++) {
+            TempoData td = tempoMap.getTempoDataOf(i);
+            if (td.isConstantTempo()) {
+                avgTempo += td.bpm * td.beatLength * 4;
+            }
+            else {
+                double meanTempoAt = td.meanTempoAt == null ? 0.5 : td.meanTempoAt;
+                double frameMean = tempoMap.getTempoAt(td.startDate + meanTempoAt * (td.endDate - td.startDate));
+                avgTempo += frameMean * td.beatLength * 4;
+            }
+        }
+        avgTempo /= tempoMap.size();
+        return avgTempo;
+    }
+
+    private static double getAverageDynamics(DynamicsMap dynamicsMap) {
+        if (dynamicsMap.isEmpty()) return 50.0;
+
+        double avgVolume = 0.0;
+        for (int i=0; i<dynamicsMap.size(); i++) {
+            DynamicsData dd = dynamicsMap.getDynamicsDataOf(i);
+            if (dd.isConstantDynamics()) {
+                avgVolume += dd.volume;
+            }
+            else {
+                double frameMean = (dd.transitionTo + dd.volume) / 2.0;
+                avgVolume += frameMean;
+            }
+        }
+        avgVolume /= dynamicsMap.size();
+        return avgVolume;
+    }
+    
+
     private static double[] isolateMPM(
         Performance performance,
         Set<String> mpmIDs
     ) {
         System.out.println("Isolating MPM elements by xml:id, count=" + mpmIDs.size());
 
-        // Find all dated elements and keep only those whose xml:id is in mpmIDs
+        // Find all dated elements and store those whose xml:id is in mpmIDs
         final String XML_NS = "http://www.w3.org/XML/1998/namespace";
         Nodes candidates = performance.getXml().query("descendant::*[@date]");
         List<Element> selectedElements = new ArrayList<>();
@@ -63,7 +102,10 @@ public class PerformService {
                 selectedElements.add(el);
             }
         }
-        System.out.println("Found " + selectedElements.size() + " matching elements.");
+        System.out.println("Found " + selectedElements.size() + " matching elements: " + selectedElements.stream().map(e -> firstNonNull(
+            e.getAttributeValue("id", XML_NS),
+            e.getAttributeValue("xml:id")
+        )).collect(Collectors.toList()));
 
         // Find the element with the smallest date
         double minDate = Double.POSITIVE_INFINITY;
@@ -83,137 +125,77 @@ public class PerformService {
             } catch (Exception ignore) {}
             }
         }
+        System.out.println("Starting with minDate=" + minDate + " maxDate=" + maxDate);
 
         // 1) Deal with <tempo>
         {
             TempoMap tempoMap = (TempoMap) performance.getGlobal().getDated().getMap(Mpm.TEMPO_MAP);
-            tempoMap.sort();
+            double avgTempo = PerformService.getAverageTempo(tempoMap);
 
-            int avgTempo = 60;
-            if (!tempoMap.isEmpty()) {
-                for (int i=0; i<tempoMap.size(); i++) {
-                    TempoData td = tempoMap.getTempoDataOf(i);
-                    if (td.isConstantTempo()) {
-                        avgTempo += td.bpm * td.beatLength * 4;
-                    }
-                    else {
-                        double meanTempoAt = td.meanTempoAt == null ? 0.5 : td.meanTempoAt;
-                        double frameMean = tempoMap.getTempoAt(td.startDate + meanTempoAt * (td.endDate - td.startDate));
-                        avgTempo += frameMean * td.beatLength * 4;
+            for (int i=0; i<tempoMap.size(); i++) {
+                TempoData td = tempoMap.getTempoDataOf(i);
+                if (mpmIDs.contains(td.xmlId)) {
+                    if (td.endDate > maxDate) {
+                        System.out.println("(tempo) Adjusting maxDate from " + maxDate + " to " + td.endDate);
+                        maxDate = td.endDate;
                     }
                 }
-                avgTempo /= tempoMap.size();
-            }
-
-            ArrayList<Integer> toRemove = new ArrayList<>();
-            for (int i=0; i<tempoMap.size(); i++) {
-                if (!mpmIDs.contains(tempoMap.getTempoDataOf(i).xmlId)) {
-                    toRemove.add(i);
+                else {
+                    // replace all non-selected tempo data with average tempo data
+                    Element el = tempoMap.getElement(i);
+                    el.addAttribute(new Attribute("bpm", Double.toString(avgTempo)));
+                    el.addAttribute(new Attribute("beatLength", "0.25"));
+                    Attribute transitionTo = el.getAttribute("transition.to");
+                    if (transitionTo != null) {
+                       el.removeAttribute(transitionTo);
+                    }
                 }
             }
-
-            // We need to avoid removing the last tempo data,
-            // since otherwise the last selected tempo might
-            // stretch to another end date than originally intended.
-            // This is only relevant if we are not removing all tempo data. 
-            if (toRemove.size() > 0 && toRemove.size() < tempoMap.size()) {
-                toRemove.remove(toRemove.size() - 1);
-            }
-
-            Collections.reverse(toRemove);
-            for (int idx : toRemove) {
-                tempoMap.removeElement(idx);
-            }
-
-            if (tempoMap.isEmpty() || tempoMap.getTempoDataOf(0).startDate > minDate) {
-                tempoMap.addTempo(minDate, Double.toString(avgTempo), 0.25);
-                tempoMap.sort();
-            }
-
-            // the last tempo data should be the one which we left in place
-            // and it should have the same date as the originally intended end date.
-            for (int i=0; i<tempoMap.size(); i++) {
-                System.out.println("Tempo entry " + i + ": startId=" + tempoMap.getTempoDataOf(i).startDate);
-            }
-            maxDate = Math.max(maxDate, tempoMap.getTempoDataOf(tempoMap.size() - 1).startDate);
         }
 
         // 2) Deal with dynamics
         {
             DynamicsMap dynamicsMap = (DynamicsMap) performance.getGlobal().getDated().getMap(Mpm.DYNAMICS_MAP);
-            dynamicsMap.sort();
 
-            int avgVolume = 60;
-            if (!dynamicsMap.isEmpty()) {
-                for (int i=0; i<dynamicsMap.size(); i++) {
-                    DynamicsData dd = dynamicsMap.getDynamicsDataOf(i);
-                    if (dd.isConstantDynamics()) {
-                        avgVolume += dd.volume;
-                    }
-                    else {
-                        double frameMean = (dd.transitionTo + dd.volume) / 2.0;
-                        avgVolume += frameMean;
-                    }
-                }
-            }
-            avgVolume /= dynamicsMap.size();
+            double avgDynamics = PerformService.getAverageDynamics(dynamicsMap);
 
-            ArrayList<Integer> toRemove = new ArrayList<>();
             for (int i=0; i<dynamicsMap.size(); i++) {
-                if (!mpmIDs.contains(dynamicsMap.getDynamicsDataOf(i).xmlId)) {
-                    toRemove.add(i);
+                DynamicsData dd = dynamicsMap.getDynamicsDataOf(i);
+                if (mpmIDs.contains(dd.xmlId)) {
+                    if (dd.endDate > maxDate) {
+                        System.out.println("(dynamics) Adjusting maxDate from " + maxDate + " to " + dd.endDate);
+                        maxDate = dd.endDate;
+                    }
+                }
+                else {
+                    // replace all non-selected tempo data with average tempo data
+                    Element el = dynamicsMap.getElement(i);
+                    el.addAttribute(new Attribute("volume", Double.toString(avgDynamics)));
+                    Attribute transitionTo = el.getAttribute("transition.to");
+                    if (transitionTo != null) {
+                       el.removeAttribute(transitionTo);
+                    }
                 }
             }
-
-            // We need to avoid removing the last dynamics data,
-            // since otherwise the last selected tempo might
-            // stretch to another end date than originally intended.
-            if (toRemove.size() > 0 && toRemove.size() < dynamicsMap.size()) {
-                toRemove.remove(toRemove.size() - 1);
-            }
-
-            Collections.reverse(toRemove);
-            for (int idx : toRemove) {
-                dynamicsMap.removeElement(idx);
-            }
-
-            if (dynamicsMap.isEmpty() || dynamicsMap.getDynamicsDataOf(0).startDate > minDate) {
-                dynamicsMap.addDynamics(minDate, Double.toString(avgVolume));
-            }
-
-            // the last dynamics data should be the one which we left in place
-            // and it should have the same date as the originally intended end date.
-            maxDate = Math.max(maxDate, dynamicsMap.getDynamicsDataOf(dynamicsMap.size() - 1).startDate);
-        }
+        } 
 
         // 2) Deal with movement
         {
             MovementMap movementMap = (MovementMap) performance.getGlobal().getDated().getMap(Mpm.MOVEMENT_MAP);
-            movementMap.sort();
-
-            ArrayList<Integer> toRemove = new ArrayList<>();
             for (int i=0; i<movementMap.size(); i++) {
-                if (!mpmIDs.contains(movementMap.getMovementDataOf(i).xmlId)) {
-                    toRemove.add(i);
+                MovementData dd = movementMap.getMovementDataOf(i);
+                if (mpmIDs.contains(dd.xmlId)) {
+                    if (dd.endDate > maxDate) {
+                        System.out.println("(movement) Adjusting maxDate from " + maxDate + " to " + dd.endDate);
+                        maxDate = dd.endDate;
+                    }
                 }
-            }
-
-            // We need to avoid removing the last tempo data,
-            // since otherwise the last selected tempo might
-            // stretch to another end date than originally intended.
-            if (toRemove.size() > 0 && toRemove.size() < movementMap.size()) {
-                toRemove.remove(toRemove.size() - 1);
-            }
-
-            Collections.reverse(toRemove);
-            for (int idx : toRemove) {
-                movementMap.removeElement(idx);
-            }
-
-            // the last dynamics data should be the one which we left in place
-            // and it should have the same date as the originally intended end date.
-            if (!movementMap.isEmpty()) {
-                maxDate = Math.max(maxDate, movementMap.getMovementDataOf(movementMap.size() - 1).startDate);
+                else {
+                    // neutralize all remaining
+                    Element el = movementMap.getElement(i);
+                    el.addAttribute(new Attribute("position", "0"));
+                    el.addAttribute(new Attribute("transition.to", "0"));
+                }
             }
         }
 
@@ -250,11 +232,12 @@ public class PerformService {
  
             if (mapType == Mpm.RUBATO_MAP) {
                 RubatoData rd = ((RubatoMap) map).getRubatoDataOf(map.size() - 1);
+                System.out.println("The last active rubato frame ends at " + (rd.frameLength + rd.startDate) + ". Adjusting " + maxDate + "if needed.");
                 maxDate = Math.max(maxDate, rd.frameLength + rd.startDate);
             }
             else if (mapType == Mpm.METRICAL_ACCENTUATION_MAP) {
                 MetricalAccentuationData md = ((MetricalAccentuationMap) map).getMetricalAccentuationDataOf(map.size() - 1);
-                System.out.println("MetricalAccentuationMap has " + map.size() + " entries");
+                System.out.println("MetricalAccentuationMap has " + map.size() + " entries. " + md);
                 if (md == null) continue;
                 System.out.println("Last MetricalAccentuationData startDate=" + md.startDate + " length=" + md.accentuationPatternDef.getLength());
 
@@ -262,6 +245,8 @@ public class PerformService {
                 maxDate = Math.max(maxDate, md.startDate + length);
             }
         }
+
+        System.out.println("Final range after isolating MPM ids: minDate=" + minDate + " maxDate=" + maxDate);
 
         return new double[] {minDate, maxDate};
     }
@@ -466,8 +451,8 @@ public class PerformService {
 
         // 3) Load MPM and get Performance
         System.out.println("Loading MPM: " + mpmFile.getAbsolutePath());
-        Mpm mpm = new Mpm(mpmFile); // Adjust to your API if different (e.g., Mpm.read(file))
-        Performance performance = mpm.getPerformance(0); // Or select the appropriate Performance by id/index
+        Mpm mpm = new Mpm(mpmFile);
+        Performance performance = mpm.getPerformance(0);
         if (performance == null) {
             throw new IllegalStateException("No Performance found in MPM file.");
         }
@@ -576,7 +561,7 @@ public class PerformService {
             if (dateStr == null) continue;
             try {
                 double d = Double.parseDouble(dateStr);
-                if (d > maxDate) {
+                if (d > maxDate || d < minDate) {
                     toRemoveByDate.add(el);
                 }
             } catch (Exception ignore) {
@@ -586,7 +571,7 @@ public class PerformService {
             Element parent = (Element) e.getParent();
             if (parent != null) parent.removeChild(e);
         }
-        System.out.println("Removed " + toRemoveByDate.size() + " elements with date > maxDate (" + maxDate + ")");
+        System.out.println("Removed " + toRemoveByDate.size() + " elements with date > " + maxDate + " or < " + minDate);
 
         Nodes sectionEnd = root.query("descendant::section[@date.end]");
         for (int i = 0; i < sectionEnd.size(); i++) {

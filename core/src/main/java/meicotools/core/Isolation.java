@@ -67,7 +67,7 @@ public class Isolation {
         Performance performance,
         Set<String> mpmIDs
     ) {
-        System.out.println("Isolating MPM elements by xml:id, count=" + mpmIDs.size());
+        System.out.println("Isolating MPM elements by xml:id: " + mpmIDs);
 
         // Find all dated elements and store those whose xml:id is in mpmIDs
         final String XML_NS = "http://www.w3.org/XML/1998/namespace";
@@ -80,12 +80,17 @@ public class Isolation {
                 selectedElements.add(el);
             }
         }
+
         System.out.println("Found " + selectedElements.size() + " matching elements: " +
             selectedElements
                 .stream()
                 .map(e -> e.getAttributeValue("id", XML_NS))
                 .collect(Collectors.toList())
         );
+
+        if (selectedElements.isEmpty()) {
+            throw new IllegalArgumentException("No matching MPM elements found for the provided xml:id set.");
+        }
 
         // Find the element with the smallest date
         double minDate = Double.POSITIVE_INFINITY;
@@ -196,7 +201,7 @@ public class Isolation {
             for (int i=0; i<map.size(); i++) {
                 Element el = map.getElement(i);
                 String xmlId = el.getAttributeValue("id", XML_NS);
-                if (xmlId == null || !mpmIDs.contains(xmlId)) {
+                if (el.getLocalName() != "style" && (xmlId == null || !mpmIDs.contains(xmlId))) {
                     toRemove.add(i);
                 }
             }
@@ -209,12 +214,11 @@ public class Isolation {
  
             if (mapType == Mpm.RUBATO_MAP) {
                 RubatoData rd = ((RubatoMap) map).getRubatoDataOf(map.size() - 1);
-                System.out.println("The last active rubato frame ends at " + (rd.frameLength + rd.startDate) + ". Adjusting " + maxDate + "if needed.");
                 maxDate = Math.max(maxDate, rd.frameLength + rd.startDate);
             }
             else if (mapType == Mpm.METRICAL_ACCENTUATION_MAP) {
+                // ((MetricalAccentuationMap) map).addStyleSwitch(0, "performance_style");
                 MetricalAccentuationData md = ((MetricalAccentuationMap) map).getMetricalAccentuationDataOf(map.size() - 1);
-                System.out.println("MetricalAccentuationMap has " + map.size() + " entries. " + md);
                 if (md == null) continue;
                 System.out.println("Last MetricalAccentuationData startDate=" + md.startDate + " length=" + md.accentuationPatternDef.getLength());
 

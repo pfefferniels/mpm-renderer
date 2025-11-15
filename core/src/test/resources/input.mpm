@@ -647,8 +647,8 @@
           <dynamics xml:id="dynamics_90000" date="90000" endDate="91440" volume="37" transition.to="32" protraction="-0.6343290102545662" curvature="0.5761010596180617" corresp="argumentation-376f87be"></dynamics>
         </dynamicsMap>
         <metricalAccentuationMap>
-          <accentuationPattern name.ref="new-pattern" xml:id="accentuationPattern_720" date="720" scale="4.958134243264794" corresp="arg_029a8e58"></accentuationPattern>
           <style name.ref="performance_style" date="0" xml:id="b196aa9c-ef9b-4c0c-8a49-835a6d51f4ac"></style>
+          <accentuationPattern name.ref="new-pattern" xml:id="accentuationPattern_720" date="720" scale="4.958134243264794" corresp="arg_029a8e58"></accentuationPattern>
           <accentuationPattern name.ref="good-bad-simple" xml:id="accentuationPattern_2880" date="2880" scale="3.3810806274414062" corresp="argumentation-5068b907"></accentuationPattern>
           <accentuationPattern name.ref="good-bad-4x" xml:id="accentuationPattern_5760" date="5760" scale="2.3284651935100555" corresp="argumentation-5068b907"></accentuationPattern>
           <accentuationPattern name.ref="good-bad-4x" xml:id="accentuationPattern_7200" date="7200" scale="2.8532729353755713" corresp="argumentation-5068b907"></accentuationPattern>

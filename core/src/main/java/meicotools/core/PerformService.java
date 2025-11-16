@@ -1,38 +1,19 @@
 package meicotools.core;
 
 import meico.mei.Helper;
-import meico.mei.Mei;
 import meico.msm.Msm;
 import meico.mpm.Mpm;
-import meico.mpm.elements.Dated;
-import meico.mpm.elements.Global;
-import meico.mpm.elements.Part;
 import meico.mpm.elements.Performance;
-import meico.mpm.elements.maps.DynamicsMap;
-import meico.mpm.elements.maps.GenericMap;
-import meico.mpm.elements.maps.MetricalAccentuationMap;
-import meico.mpm.elements.maps.MovementMap;
-import meico.mpm.elements.maps.RubatoMap;
-import meico.mpm.elements.maps.TempoMap;
-import meico.mpm.elements.maps.data.DynamicsData;
-import meico.mpm.elements.maps.data.MetricalAccentuationData;
-import meico.mpm.elements.maps.data.MovementData;
-import meico.mpm.elements.maps.data.RubatoData;
-import meico.mpm.elements.maps.data.TempoData;
 import meico.midi.Midi;
-import meico.supplementary.KeyValue;
 import meicotools.core.ModifyService.Exaggerate;
+import meicotools.core.ModifyService.Increase;
 import meicotools.core.ModifyService.ModifyParams;
 import nu.xom.Element;
 import nu.xom.Nodes;
 import nu.xom.Attribute;
 
-import com.fasterxml.jackson.databind.ObjectMapper;
-import com.fasterxml.jackson.databind.SerializationFeature;
-
 import java.io.File;
 import java.util.*;
-import java.util.stream.Collectors;
 
 /**
  * Behavior:
@@ -50,16 +31,30 @@ public class PerformService {
         MPM_IDS
     }
 
+    public static Exaggerate getDefaultWeights() {
+        Exaggerate weights = new Exaggerate();
+        weights.tempo = 0.9;
+        weights.dynamics = 1.0;
+        weights.rubato = 0.3;
+        weights.accentuation = 1.1;
+        weights.temporalSpread = 1.5;
+        weights.dynamicsGradient = 1.0;
+        weights.relativeDuration = 0.2;
+        weights.relativeVelocity = 0.4;
+        return weights;
+    }
+
     public static void perform(
         File meiFile,
         File mpmFile,
-        File rangesFile,
         File outFile,
         SelectionType selectionType,
         Set<String> keepIds,
         int ppq,
         int movementIndex,
-        Double exaggerate 
+        Double exaggerate,
+        Double sketchiness,
+        String extent
     ) throws Exception {
         Msm msm = ConvertService.meiToMsm(meiFile, movementIndex);
 
@@ -69,12 +64,25 @@ public class PerformService {
             throw new IllegalStateException("No Performance found in MPM file.");
         }
 
+        ModifyParams params = new ModifyParams();
         if (exaggerate != null) {
-            ModifyParams params = new ModifyParams();
-            params.exaggerate = new Exaggerate();
-            params.exaggerate.tempo = exaggerate;
-            params.exaggerate.dynamics = exaggerate;
-            ModifyService.modify(mpm, params);
+            params.exaggerate = new Exaggerate(exaggerate);
+            params.exaggerate.applyWeights(getDefaultWeights());
+        }
+
+        params.exaggerate.scale(
+            Shader.bringOut(performance, keepIds, 0.2)
+        );
+
+        if (sketchiness != null) {
+            params.increase = new Increase();
+            params.increase.tempo = sketchiness;
+            params.increase.dynamics = 0.5 * sketchiness;
+        }
+
+        if (params.increase != null || params.exaggerate != null) {
+            System.out.println("Modifying performance with params: " + params);
+            ModifyService.modify(performance, params);
         }
 
         Msm expressiveMsm = performance.perform(msm);
@@ -83,70 +91,15 @@ public class PerformService {
             double[] range = selectionType == SelectionType.NOTE_IDS
                 ? Isolation.isolateNotes(expressiveMsm, keepIds)
                 : Isolation.isolateInstructions(performance, keepIds);
-            System.out.println("Filtering to " + range);
+
+            if (extent == "pick") range = Isolation.pick(range);
+            if (extent == "contextualize") range = Isolation.contextualize(range);
+
             filterNotesByDate(expressiveMsm, range[0], range[1]);
             shiftOnsetsToFirstNote(expressiveMsm);
         }
 
-        ArrayList<GenericMap> maps = new ArrayList<GenericMap>();
-
-        ArrayList<Part> parts = performance.getAllParts();
-        for (Part part : parts) {
-            Dated dated = part.getDated();
-            maps.addAll(dated.getAllMaps().values());
-        }
-
-        Global global = performance.getGlobal();
-        Dated dated = global.getDated();
-        maps.addAll(dated.getAllMaps().values());
-
-        Map<String, Double[]> ranges = new HashMap<String, Double[]>();
-        for (GenericMap map : maps) {
-            for (KeyValue<Double, Element> entry : map.getAllElements()) {
-                Double date = entry.getKey();
-                Double phys = toPhysicalDate(date, expressiveMsm);
-                Double physEnd = null;
-                if (phys == null) continue;
-
-                String elementId = firstNonNull(
-                        entry.getValue().getAttributeValue("id", "http://www.w3.org/XML/1998/namespace"),
-                        entry.getValue().getAttributeValue("xml:id")
-                );
-                if (elementId == null) continue;
-
-                Attribute endDateAttr = entry.getValue().getAttribute("endDate");
-                if (endDateAttr != null) {
-                    try {
-                        Double endDate = Double.parseDouble(endDateAttr.getValue());
-                        physEnd = toPhysicalDate(endDate, expressiveMsm);
-                    } catch (Exception ignore) {}
-                }
-
-                Double[] result = new Double[] { phys, physEnd == null ? phys : physEnd };
-                ranges.put(elementId, result);
-            }
-        }
-        // Write ranges map as a JSON object to rangesFile using Jackson
-        java.util.Map<String, Object> outMap = new LinkedHashMap<>();
-        for (java.util.Map.Entry<String, Double[]> e : ranges.entrySet()) {
-            Double[] v = e.getValue();
-            outMap.put(e.getKey(), v);
-        }
-
-        java.io.File parent = rangesFile.getParentFile();
-        if (parent != null && !parent.exists()) parent.mkdirs();
-
-        ObjectMapper mapper = new ObjectMapper();
-        mapper.enable(SerializationFeature.INDENT_OUTPUT);
-
-        try {
-            mapper.writeValue(rangesFile, outMap);
-            System.out.println("Wrote ranges JSON to " + rangesFile.getAbsolutePath());
-        } catch (Exception ex) {
-            throw new RuntimeException("Failed to write ranges JSON to " + rangesFile, ex);
-        }
-
-        // 6) Export expressive MIDI (attributes already present on expressiveMsm)
+        // Export expressive MIDI (attributes already present on expressiveMsm)
         System.out.println("Exporting expressive MSM to: " + outFile.getAbsolutePath() + ".msm");
 
         expressiveMsm.writeFile(outFile.getAbsolutePath() + ".msm");
@@ -181,7 +134,7 @@ public class PerformService {
             if (dateStr == null) continue;
             try {
                 double d = Double.parseDouble(dateStr);
-                if (d > maxDate || d < minDate) {
+                if (d >= maxDate || d < minDate) {
                     toRemoveByDate.add(el);
                 }
             } catch (Exception ignore) {
@@ -230,41 +183,20 @@ public class PerformService {
 
         for (int i = 0; i < noteNodes.size(); i++) {
             Element note = (Element) noteNodes.get(i);
+
             String msStr = note.getAttributeValue("milliseconds.date");
-            try {
+            if (msStr != null) {
                 double t = Double.parseDouble(msStr);
                 double shifted = Math.max(0.0, t - minMs);
                 note.addAttribute(new nu.xom.Attribute("milliseconds.date", Double.toString(shifted)));
-            } catch (Exception ignore) {}
+            }
+
+            String msEndStr = note.getAttributeValue("milliseconds.date.end");
+            if (msEndStr != null) {
+                double tEnd = Double.parseDouble(msEndStr);
+                double shiftedEnd = Math.max(0.0, tEnd - minMs);
+                note.addAttribute(new nu.xom.Attribute("milliseconds.date.end", Double.toString(shiftedEnd)));
+            }
         }
-    }
-
-    private static String firstNonNull(String... vals) {
-        for (String v : vals) if (v != null) return v;
-        return null;
-    }
-
-    private static Double toPhysicalDate(Double date, Msm msm) {
-        Double closest = null;
-        Double closestPhysical = 0.0;
-
-        Element root = msm.getRootElement();
-        Nodes notes = root.query("descendant::note[@milliseconds.date]");
-
-        for (int i = 0; i < notes.size(); i++) {
-            Element note = (Element) notes.get(i);
-            String noteDate = note.getAttributeValue("date");
-            if (noteDate == null) continue;
-
-            try {
-                Double d = Double.parseDouble(noteDate);
-                if (closest == null || Math.abs(d - date) < Math.abs(closest - date)) {
-                    closest = d;
-                    closestPhysical = Double.parseDouble(note.getAttributeValue("milliseconds.date"));
-                }
-            } catch (Exception ignore) {}
-        }
-
-        return closestPhysical;
     }
 }

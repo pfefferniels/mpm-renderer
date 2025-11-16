@@ -6,9 +6,7 @@ import com.sun.net.httpserver.Headers;
 import com.sun.net.httpserver.HttpExchange;
 import com.sun.net.httpserver.HttpHandler;
 
-import meicotools.core.Isolation;
 import meicotools.core.PerformService;
-import meicotools.core.PerformService.SelectionType;
 
 import java.io.*;
 import java.nio.charset.StandardCharsets;
@@ -50,7 +48,6 @@ public class PerformHandler implements HttpHandler {
             File tmpDir     = Files.createTempDirectory("meico-perform").toFile();
             File meiFile    = new File(tmpDir, "input.mei");
             File mpmFile    = new File(tmpDir, "input.mpm");
-            File rangesFile = new File(tmpDir, "ranges.txt");     // OUTPUT (filled by service)
             File outMidi    = new File(tmpDir, "result.mid");     // OUTPUT (filled by service)
 
             writeString(meiFile, req.mei);
@@ -77,13 +74,14 @@ public class PerformHandler implements HttpHandler {
                 PerformService.perform(
                         meiFile,
                         mpmFile,
-                        rangesFile,
                         outMidi,
                         selectionType,
                         keepIds,
                         req.ppq != null ? req.ppq : 720,
                         req.movementIndex != null ? req.movementIndex : 0,
-                        req.exaggerate
+                        req.exaggerate,
+                        req.sketchiness,
+                        req.extent
                 );
             } catch (Exception ex) {
                 ex.printStackTrace();
@@ -91,19 +89,17 @@ public class PerformHandler implements HttpHandler {
                 return;
             }
 
-            if (!outMidi.exists() || !rangesFile.exists()) {
-                sendText(exchange, 500, "Missing outputs: expected result.mid and ranges.txt.");
+            if (!outMidi.exists()) {
+                sendText(exchange, 500, "Missing outputs: expected result.mid.");
                 return;
             }
 
             // 4) Build JSON response
             byte[] midiBytes = Files.readAllBytes(outMidi.toPath());
             String midiB64   = Base64.getEncoder().encodeToString(midiBytes);
-            String rangesTxt = Files.readString(rangesFile.toPath(), StandardCharsets.UTF_8);
 
             Response payload = new Response();
             payload.midi_b64 = midiB64;
-            payload.ranges   = rangesTxt;
             payload.filename = "result.mid";          // optional convenience
             payload.ppq      = req.ppq != null ? req.ppq : 720;
             payload.movementIndex = req.movementIndex != null ? req.movementIndex : 0;
@@ -132,13 +128,14 @@ public class PerformHandler implements HttpHandler {
         public List<String> ids;        // optional
         public List<String> mpmIds;     // optional
         public Double exaggerate;       // optional
+        public Double sketchiness;      // optional
+        public String extent;           // optional
         public Integer ppq;             // optional (default 720)
         public Integer movementIndex;   // optional (default 0)
     }
 
     public static class Response {
         public String midi_b64;         // base64-encoded MIDI bytes
-        public String ranges;           // text produced by service
         public String filename;         // optional (e.g., "result.mid")
         public Integer ppq;             // echo of effective params
         public Integer movementIndex;   // echo of effective params

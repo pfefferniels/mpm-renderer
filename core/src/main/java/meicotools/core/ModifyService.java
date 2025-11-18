@@ -214,7 +214,7 @@ public class ModifyService {
     }
   }
 
-  // Apply (x - 1) * (f + 1) + 1 for rubato intensity where present.
+  // Apply (x - 1) * scale + 1 for rubato intensity where present.
   public static void exaggerateRubatoIntensity(RubatoMap rubatoMap, double scale) {
     for (int i = 0; i < rubatoMap.size(); i++) {
       RubatoData rd = rubatoMap.getRubatoDataOf(i);

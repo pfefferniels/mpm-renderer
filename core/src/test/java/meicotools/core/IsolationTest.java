@@ -2,10 +2,13 @@ package meicotools.core;
 
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.BeforeEach;
+import org.junit.jupiter.api.BeforeAll;
 import org.junit.jupiter.api.io.TempDir;
 
+import meico.mei.Mei;
 import meico.mpm.Mpm;
 import meico.mpm.elements.Performance;
+import meico.msm.Msm;
 
 import static org.junit.jupiter.api.Assertions.*;
 
@@ -20,17 +23,25 @@ import java.nio.file.Files;
  */
 public class IsolationTest {
     private static Performance performance;
+    private static Mei mei;
+    private static Msm msm;
+
+    @BeforeAll
+    static void loadMEI() throws Exception{
+        ClassLoader classLoader = IsolationTest.class.getClassLoader();
+        
+        File meiFile = new File(classLoader.getResource("input.mei").getFile());
+        mei = new Mei(meiFile);
+        msm = ConvertService.meiToMsm(meiFile, 0);
+    }
 
     @BeforeEach
-    void setUp() throws Exception {
+    void loadPerformance() throws Exception {
         ClassLoader classLoader = IsolationTest.class.getClassLoader();
         
         File mpmFile = new File(classLoader.getResource("input.mpm").getFile());
         Mpm mpm = new Mpm(mpmFile);
         performance = mpm.getPerformance(0);
-        
-        // Verify test files exist
-        assertTrue(performance != null, "Failed to load performance from input.mpm");
     }
 
     @Test
@@ -72,6 +83,13 @@ public class IsolationTest {
     void testCombination() throws Exception {
         double[] range = Isolation.isolateInstructions(performance, Set.of("tempo_720", "dynamics_2520"));
         double[] expected = { 720.0, 3600.0 };
+        assertArrayEquals(expected, range);
+    }
+
+    @Test 
+    void testMeasureIsolation() throws Exception {
+        double[] range = Isolation.isolateMeasures(mei, msm, Set.of("1", "2"));
+        double[] expected = { 720.0, 6480.0 };
         assertArrayEquals(expected, range);
     }
 }

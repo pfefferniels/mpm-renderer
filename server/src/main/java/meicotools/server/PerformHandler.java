@@ -6,11 +6,13 @@ import com.sun.net.httpserver.Headers;
 import com.sun.net.httpserver.HttpExchange;
 import com.sun.net.httpserver.HttpHandler;
 
+import meico.midi.Midi;
 import meicotools.core.PerformService;
 
 import java.io.*;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
+import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.Base64;
 import java.util.Collections;
@@ -44,45 +46,66 @@ public class PerformHandler implements HttpHandler {
                 return;
             }
 
+            System.out.println("Received request: " + 
+                "mei length=" + req.mei.length() +
+                ", mpm length=" + req.mpm.length() +
+                ", ids=" + (req.ids != null ? req.ids : "null") +
+                ", mpmIds=" + (req.mpmIds != null ? req.mpmIds : "null") +
+                ", measures=" + (req.measures != null ? req.measures : "null") +
+                ", exaggerate=" + req.exaggerate +
+                ", sketchiness=" + req.sketchiness +
+                ", exemplify=" + req.exemplify +
+                ", context=" + req.context +
+                ", ppq=" + req.ppq +
+                ", movementIndex=" + req.movementIndex
+            );
+
             // 2) Prepare temp files
             File tmpDir     = Files.createTempDirectory("meico-perform").toFile();
             File meiFile    = new File(tmpDir, "input.mei");
             File mpmFile    = new File(tmpDir, "input.mpm");
-            File outMidi    = new File(tmpDir, "result.mid");     // OUTPUT (filled by service)
+            File outMidi    = new File(tmpDir, "result.mid");
 
             writeString(meiFile, req.mei);
             writeString(mpmFile, req.mpm);
 
-            String[] selection =
-                req.ids != null
-                ? req.ids.toArray(new String[0])
-                : (req.mpmIds != null ? req.mpmIds.toArray(new String[0]) : new String[0]);
+            PerformService.SelectionType selectionType = PerformService.SelectionType.NONE;
+            ArrayList<String> selection = new ArrayList<>();
+            if (req.ids != null && !req.ids.isEmpty()) {
+                selectionType = PerformService.SelectionType.NOTE_IDS;
+                selection = new ArrayList<>(req.ids);
+            }
+            if (req.mpmIds != null && !req.mpmIds.isEmpty()) {
+                selectionType = PerformService.SelectionType.MPM_IDS;
+                selection = new ArrayList<>(req.mpmIds);
+            }
+            if (req.measures != null && !req.measures.isEmpty()) {
+                selectionType = PerformService.SelectionType.MEASURES;
+                selection = new ArrayList<>(req.measures);
+            }
 
-            Set<String> keepIds = Collections.emptySet();
-            keepIds = Arrays.stream(selection)
-                .map(String::trim)
-                .filter(s -> !s.isEmpty())
-                .collect(Collectors.toCollection(LinkedHashSet::new));
-
-            PerformService.SelectionType selectionType =
-                req.ids != null
-                ? PerformService.SelectionType.NOTE_IDS
-                : (req.mpmIds != null ? PerformService.SelectionType.MPM_IDS : PerformService.SelectionType.NONE);
+            Set<String> keepIds = selection.stream()
+                .filter(id -> id != null)
+                .collect(Collectors.toCollection(() -> new LinkedHashSet<String>()));
             
+            System.out.println("Performing with selectionType=" + selectionType + ", keepIds=" + keepIds);
+
             // 3) Call service
+            PerformService performService = new PerformService();
             try {
-                PerformService.perform(
+                Midi midi = performService.perform(
                         meiFile,
                         mpmFile,
-                        outMidi,
                         selectionType,
                         keepIds,
                         req.ppq != null ? req.ppq : 720,
                         req.movementIndex != null ? req.movementIndex : 0,
                         req.exaggerate,
                         req.sketchiness,
-                        req.extent
+                        req.exemplify,
+                        req.context
                 );
+                midi.writeMidi(outMidi.getAbsolutePath());
             } catch (Exception ex) {
                 ex.printStackTrace();
                 sendText(exchange, 500, "Perform failed: " + ex.getMessage());
@@ -100,9 +123,10 @@ public class PerformHandler implements HttpHandler {
 
             Response payload = new Response();
             payload.midi_b64 = midiB64;
-            payload.filename = "result.mid";          // optional convenience
+            payload.filename = "result.mid";
             payload.ppq      = req.ppq != null ? req.ppq : 720;
             payload.movementIndex = req.movementIndex != null ? req.movementIndex : 0;
+            payload.noteIDs = performService.noteIDs;
 
             byte[] json = MAPPER.writeValueAsBytes(payload);
 
@@ -123,13 +147,15 @@ public class PerformHandler implements HttpHandler {
     // --- DTOs ---
 
     public static class Request {
-        public String mei;              // required
-        public String mpm;              // required
-        public List<String> ids;        // optional
-        public List<String> mpmIds;     // optional
-        public Double exaggerate;       // optional
-        public Double sketchiness;      // optional
-        public String extent;           // optional
+        public String mei;
+        public String mpm;
+        public List<String> ids; 
+        public List<String> mpmIds;
+        public List<String> measures;
+        public Double exaggerate;
+        public Double sketchiness;
+        public Boolean exemplify;
+        public Double context;
         public Integer ppq;             // optional (default 720)
         public Integer movementIndex;   // optional (default 0)
     }
@@ -139,6 +165,7 @@ public class PerformHandler implements HttpHandler {
         public String filename;         // optional (e.g., "result.mid")
         public Integer ppq;             // echo of effective params
         public Integer movementIndex;   // echo of effective params
+        public List<String> noteIDs;    // IDs of notes that were performed
     }
 
     // --- helpers ---

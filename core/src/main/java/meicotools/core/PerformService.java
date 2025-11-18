@@ -1,6 +1,7 @@
 package meicotools.core;
 
 import meico.mei.Helper;
+import meico.mei.Mei;
 import meico.msm.Msm;
 import meico.mpm.Mpm;
 import meico.mpm.elements.Performance;
@@ -28,34 +29,38 @@ public class PerformService {
     public enum SelectionType {
         NONE,
         NOTE_IDS,
-        MPM_IDS
+        MPM_IDS,
+        MEASURES
     }
 
     public static Exaggerate getDefaultWeights() {
         Exaggerate weights = new Exaggerate();
-        weights.tempo = 0.9;
-        weights.dynamics = 1.0;
-        weights.rubato = 0.3;
-        weights.accentuation = 1.1;
-        weights.temporalSpread = 1.5;
-        weights.dynamicsGradient = 1.0;
+        weights.tempo = 1.0;
+        weights.dynamics = 1.1;
+        weights.rubato = 0.32;
+        weights.accentuation = 1.9;
+        weights.temporalSpread = 1.9;
+        weights.dynamicsGradient = 0.3;
         weights.relativeDuration = 0.2;
-        weights.relativeVelocity = 0.4;
+        weights.relativeVelocity = 0.5;
         return weights;
     }
 
-    public static void perform(
+    public ArrayList<String> noteIDs = new ArrayList<String>();
+
+    public Midi perform(
         File meiFile,
         File mpmFile,
-        File outFile,
         SelectionType selectionType,
         Set<String> keepIds,
         int ppq,
         int movementIndex,
         Double exaggerate,
         Double sketchiness,
-        String extent
+        Boolean exemplify,
+        Double context
     ) throws Exception {
+        Mei mei = new Mei(meiFile);
         Msm msm = ConvertService.meiToMsm(meiFile, movementIndex);
 
         Mpm mpm = new Mpm(mpmFile);
@@ -70,39 +75,59 @@ public class PerformService {
             params.exaggerate.applyWeights(getDefaultWeights());
         }
 
-        params.exaggerate.scale(
-            Shader.bringOut(performance, keepIds, 0.2)
-        );
+        if (selectionType == SelectionType.MPM_IDS) {
+            params.exaggerate.scale(
+                Shader.bringOut(performance, keepIds, 0.2)
+            );
+        }
+
+        System.out.println("Modifying performance of " + keepIds + "with params:" + params.exaggerate);
+        System.out.println("  tempo=" + params.exaggerate.tempo + 
+                 ", dynamics=" + params.exaggerate.dynamics + 
+                 ", rubato=" + params.exaggerate.rubato +
+                 ", accentuation=" + params.exaggerate.accentuation +
+                 ", temporalSpread=" + params.exaggerate.temporalSpread +
+                 ", dynamicsGradient=" + params.exaggerate.dynamicsGradient +
+                 ", relativeDuration=" + params.exaggerate.relativeDuration +
+                 ", relativeVelocity=" + params.exaggerate.relativeVelocity);
+
 
         if (sketchiness != null) {
             params.increase = new Increase();
             params.increase.tempo = sketchiness;
-            params.increase.dynamics = 0.5 * sketchiness;
+            params.increase.dynamics = Math.min(1.0, 1.0 / sketchiness);
         }
 
         if (params.increase != null || params.exaggerate != null) {
-            System.out.println("Modifying performance with params: " + params);
             ModifyService.modify(performance, params);
         }
 
         Msm expressiveMsm = performance.perform(msm);
+        System.out.println("Rendered" + expressiveMsm.getRootElement().query("descendant::note").size() + "notes in expressive MSM.");
 
         if (!keepIds.isEmpty()) {
-            double[] range = selectionType == SelectionType.NOTE_IDS
-                ? Isolation.isolateNotes(expressiveMsm, keepIds)
-                : Isolation.isolateInstructions(performance, keepIds);
+            double[] range = new double[] {};
+            if (selectionType == SelectionType.NOTE_IDS) {
+                range = Isolation.isolateNotes(expressiveMsm, keepIds);
+            }
+            else if (selectionType == SelectionType.MPM_IDS) {
+                range = Isolation.isolateInstructions(performance, keepIds);
+            }
+            else if (selectionType == SelectionType.MEASURES) {
+                System.out.println("Isolating measures: " + keepIds);
+                range = Isolation.isolateMeasures(mei, msm, keepIds);
+            }
+            
+            this.collectActiveNotes(expressiveMsm, range[0], range[1]);
+            if (exemplify && selectionType == SelectionType.MPM_IDS) {
+                range = Isolation.pickExample(performance, keepIds);
+            }
+            range = Isolation.contextualize(range, context, performance);
 
-            if (extent == "pick") range = Isolation.pick(range);
-            if (extent == "contextualize") range = Isolation.contextualize(range);
-
-            filterNotesByDate(expressiveMsm, range[0], range[1]);
+            System.out.println("Final range: " + range[0] + " to " + range[1]);
+            this.filterNotesByDate(expressiveMsm, range[0], range[1]);
             shiftOnsetsToFirstNote(expressiveMsm);
         }
-
-        // Export expressive MIDI (attributes already present on expressiveMsm)
-        System.out.println("Exporting expressive MSM to: " + outFile.getAbsolutePath() + ".msm");
-
-        expressiveMsm.writeFile(outFile.getAbsolutePath() + ".msm");
 
         // Make sure that we always use the MIDI channel 1. 
         // Yamaha Disklavier expects this and ignores other channels.
@@ -115,21 +140,36 @@ public class PerformService {
             part.addAttribute(new Attribute("midi.channel", "0"));
         }
 
-        Midi midi = expressiveMsm.exportExpressiveMidi();
-
-        midi.writeMidi(outFile.getAbsolutePath());
-        System.out.println("Wrote MIDI: " + outFile.getAbsolutePath());
-
-        System.out.println("Done.");
+        return expressiveMsm.exportExpressiveMidi();
     }
 
-    private static void filterNotesByDate(Msm msm, double minDate, double maxDate) {
+    private void collectActiveNotes(Msm msm, double minDate, double maxDate) {
+        Element root = msm.getRootElement();
+
+        Nodes noteNodes = root.query("descendant::note[@date]");
+        for (int i = 0; i < noteNodes.size(); i++) {
+            Element note = (Element) noteNodes.get(i);
+            String dateStr = note.getAttributeValue("date");
+            if (dateStr == null) continue;
+            try {
+                double d = Double.parseDouble(dateStr);
+                if (d >= minDate && d < maxDate) {
+                    this.noteIDs.add(note.getAttribute("id", "http://www.w3.org/XML/1998/namespace").getValue());
+                }
+            } catch (Exception ignore) {
+            }
+        }
+    }
+
+    private void filterNotesByDate(Msm msm, double minDate, double maxDate) {
         Element root = msm.getRootElement();
 
         Nodes datedNodes = root.query("descendant::*[@date]");
         List<Element> toRemoveByDate = new ArrayList<>();
         for (int i = 0; i < datedNodes.size(); i++) {
             Element el = (Element) datedNodes.get(i);
+            if (el.getLocalName().equals("section")) continue; // skip sections here
+
             String dateStr = el.getAttributeValue("date");
             if (dateStr == null) continue;
             try {

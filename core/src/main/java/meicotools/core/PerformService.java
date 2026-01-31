@@ -30,19 +30,20 @@ public class PerformService {
         NONE,
         NOTE_IDS,
         MPM_IDS,
-        MEASURES
+        MEASURES,
+        RANGE
     }
 
     public static Exaggerate getDefaultWeights() {
         Exaggerate weights = new Exaggerate();
         weights.tempo = 1.0;
         weights.dynamics = 1.1;
-        weights.rubato = 0.32;
-        weights.accentuation = 1.9;
-        weights.temporalSpread = 1.9;
+        weights.rubato = 0.2;
+        weights.accentuation = 1.8;
+        weights.temporalSpread = 1.5;
         weights.dynamicsGradient = 0.3;
         weights.relativeDuration = 0.2;
-        weights.relativeVelocity = 0.5;
+        weights.relativeVelocity = 0.3;
         return weights;
     }
 
@@ -58,7 +59,7 @@ public class PerformService {
         Double exaggerate,
         Double sketchiness,
         Boolean exemplify,
-        Double context
+        Boolean context
     ) throws Exception {
         Mei mei = new Mei(meiFile);
         Msm msm = ConvertService.meiToMsm(meiFile, movementIndex);
@@ -75,27 +76,17 @@ public class PerformService {
             params.exaggerate.applyWeights(getDefaultWeights());
         }
 
-        if (selectionType == SelectionType.MPM_IDS) {
+        if (selectionType == SelectionType.MPM_IDS && params.exaggerate != null) {
             params.exaggerate.scale(
                 Shader.bringOut(performance, keepIds, 0.2)
             );
         }
 
-        System.out.println("Modifying performance of " + keepIds + "with params:" + params.exaggerate);
-        System.out.println("  tempo=" + params.exaggerate.tempo + 
-                 ", dynamics=" + params.exaggerate.dynamics + 
-                 ", rubato=" + params.exaggerate.rubato +
-                 ", accentuation=" + params.exaggerate.accentuation +
-                 ", temporalSpread=" + params.exaggerate.temporalSpread +
-                 ", dynamicsGradient=" + params.exaggerate.dynamicsGradient +
-                 ", relativeDuration=" + params.exaggerate.relativeDuration +
-                 ", relativeVelocity=" + params.exaggerate.relativeVelocity);
-
-
-        if (sketchiness != null) {
+        if (sketchiness != null && sketchiness > 1.0) {
             params.increase = new Increase();
             params.increase.tempo = sketchiness;
             params.increase.dynamics = Math.min(1.0, 1.0 / sketchiness);
+            params.increase.imprecision = sketchiness;
         }
 
         if (params.increase != null || params.exaggerate != null) {
@@ -117,12 +108,24 @@ public class PerformService {
                 System.out.println("Isolating measures: " + keepIds);
                 range = Isolation.isolateMeasures(mei, msm, keepIds);
             }
+            else if (selectionType == SelectionType.RANGE) {
+                Iterator<String> it = keepIds.iterator();
+                double from = Double.parseDouble(it.next());
+                double to = Double.parseDouble(it.next());
+                range = new double[] { from, to };
+            }
             
             this.collectActiveNotes(expressiveMsm, range[0], range[1]);
-            if (exemplify && selectionType == SelectionType.MPM_IDS) {
-                range = Isolation.pickExample(performance, keepIds);
+            if (Boolean.TRUE.equals(exemplify) && selectionType == SelectionType.MPM_IDS) {
+                if ((range[1] - range[0]) > 5760.0) {
+                    range[1] = range[0] + 5760.0;
+                }
             }
-            range = Isolation.contextualize(range, context, performance);
+            if (Boolean.TRUE.equals(context)) {
+                // the shorter the range, the more context we add
+                double contextAmount = 0.375;
+                range = Isolation.contextualize(range, contextAmount, performance);
+            }
 
             System.out.println("Final range: " + range[0] + " to " + range[1]);
             this.filterNotesByDate(expressiveMsm, range[0], range[1]);

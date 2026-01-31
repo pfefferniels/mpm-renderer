@@ -8,7 +8,7 @@ To compile:
 ./gradlew :server:shadowJar
 ```
 
-To run: 
+To run:
 ```
 java -jar server/build/libs/server-all.jar
 ```

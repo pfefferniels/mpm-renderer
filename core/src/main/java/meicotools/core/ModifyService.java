@@ -14,11 +14,13 @@ import meico.mpm.elements.Dated;
 import meico.mpm.elements.Header;
 import meico.mpm.elements.maps.DynamicsMap;
 import meico.mpm.elements.maps.GenericMap;
+import meico.mpm.elements.maps.ImprecisionMap;
 import meico.mpm.elements.maps.MetricalAccentuationMap;
 import meico.mpm.elements.maps.OrnamentationMap;
 import meico.mpm.elements.maps.TempoMap;
 import meico.mpm.elements.maps.RubatoMap;
 import meico.mpm.elements.maps.data.TempoData;
+import meico.mpm.elements.maps.data.DistributionData;
 import meico.mpm.elements.maps.data.DynamicsData;
 import meico.mpm.elements.maps.data.RubatoData;
 import meico.mpm.elements.styles.GenericStyle;
@@ -39,6 +41,7 @@ public class ModifyService {
   public static class Increase {
     public Double tempo;
     public Double dynamics;
+    public Double imprecision;
   }
 
   @JsonIgnoreProperties(ignoreUnknown = true)
@@ -88,7 +91,27 @@ public class ModifyService {
     }
   }
 
+  public static void humanize(Performance perf) throws Exception {
+    double imprecisionMs = 80.0;
+    ImprecisionMap timingImprecision = ImprecisionMap.createImprecisionMap("timing");
+    timingImprecision.addDistributionCompensatingTriangle(0.0, 4.0, -imprecisionMs, imprecisionMs, -imprecisionMs, imprecisionMs, 300.0);
+
+    /*
+    ImprecisionMap durationImprecision = ImprecisionMap.createImprecisionMap("toneduration");
+    durationImprecision.addDistributionCompensatingTriangle(0, 4.0, -imprecisionMs, 20.0, -imprecisionMs, 20.0, 300.0);
+
+    ImprecisionMap dynamicsImprecision = ImprecisionMap.createImprecisionMap("dynamics");
+    dynamicsImprecision.addDistributionGaussian(0, 4.0, 7.0, 7.0);
+    */
+
+    perf.getGlobal().getDated().addMap(timingImprecision);
+    // perf.getGlobal().getDated().addMap(durationImprecision);
+    // perf.getGlobal().getDated().addMap(dynamicsImprecision);
+  }
+
   public static void modify(Performance perf, ModifyParams params) throws Exception {
+    humanize(perf);
+
     if (params.increase != null) {
       if (params.increase.tempo != null) {
         forEachMap(perf, Mpm.TEMPO_MAP, map -> {
@@ -99,6 +122,17 @@ public class ModifyService {
         forEachMap(perf, Mpm.DYNAMICS_MAP, map -> {
           scaleDynamics((DynamicsMap) map, params.increase.dynamics);
         });
+      }
+      if (params.increase.imprecision != null) {
+//         forEachMap(perf, Mpm.IMPRECISION_MAP_TIMING, map -> {
+//           scaleTimingImprecision((ImprecisionMap) map, params.increase.imprecision);
+//         });
+// 
+//         forEachMap(perf, Mpm.IMPRECISION_MAP_TONEDURATION, map -> {
+//           scaleTimingImprecision((ImprecisionMap) map, params.increase.imprecision);
+//         });
+// 
+//         System.out.println("global dated imprecision maps added, now looks like this:" + perf.getGlobal().getDated().toXml());
       }
     }
 
@@ -173,6 +207,27 @@ public class ModifyService {
     }
   }
 
+  public static void scaleTimingImprecision(ImprecisionMap imprecisionMap, double f) {
+    if (imprecisionMap.getDomain() == null
+        || (!imprecisionMap.getDomain().equals("timing")
+            && !imprecisionMap.getDomain().equals("toneduration"))
+        ) {
+      return;
+    }
+    for (int i = 0; i < imprecisionMap.size(); i++) {
+      DistributionData dd = imprecisionMap.getDistributionDataOf(i);
+      if (dd == null) continue;
+
+      Element el = imprecisionMap.getElement(i);
+      System.out.println("Scaling imprecision lower limit " + dd.lowerLimit + " and upper limit " + dd.upperLimit + " by factor " + f);
+      el.addAttribute(new Attribute("limit.lower", Double.toString(dd.lowerLimit * f)));
+      el.addAttribute(new Attribute("limit.upper", Double.toString(dd.upperLimit * f)));
+
+      el.addAttribute(new Attribute("clip.upper", Double.toString(dd.upperClip * f)));
+      el.addAttribute(new Attribute("clip.lower", Double.toString(dd.lowerClip * f)));
+    }
+  }
+
   // Apply scaling around mean for tempo transitions
   public static void exaggarateDynamics(DynamicsMap dynamicsMap, double scale) {
     for (int i = 0; i < dynamicsMap.size(); i++) {
@@ -209,6 +264,7 @@ public class ModifyService {
 
       if (td.meanTempoAt != null) {
         double newMeanTempoAt = (td.meanTempoAt - 0.5) * scale + 0.5;
+        newMeanTempoAt = Math.max(0.1, Math.min(0.9, newMeanTempoAt));
         el.addAttribute(new Attribute("meanTempoAt", Double.toString(newMeanTempoAt)));
       }
     }

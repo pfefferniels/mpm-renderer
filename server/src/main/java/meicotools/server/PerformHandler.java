@@ -83,13 +83,17 @@ public class PerformHandler implements HttpHandler {
                 selectionType = PerformService.SelectionType.MEASURES;
                 selection = new ArrayList<>(req.measures);
             }
+            if (req.from != null && req.to != null) {
+                selectionType = PerformService.SelectionType.RANGE;
+                selection = new ArrayList<>(
+                    Arrays.asList(req.from.toString(), req.to.toString())
+                );
+            }
 
-            Set<String> keepIds = selection.stream()
+            Set<String> selectionSet = selection.stream()
                 .filter(id -> id != null)
                 .collect(Collectors.toCollection(() -> new LinkedHashSet<String>()));
             
-            System.out.println("Performing with selectionType=" + selectionType + ", keepIds=" + keepIds);
-
             // 3) Call service
             PerformService performService = new PerformService();
             try {
@@ -97,7 +101,7 @@ public class PerformHandler implements HttpHandler {
                         meiFile,
                         mpmFile,
                         selectionType,
-                        keepIds,
+                        selectionSet,
                         req.ppq != null ? req.ppq : 720,
                         req.movementIndex != null ? req.movementIndex : 0,
                         req.exaggerate,
@@ -149,13 +153,18 @@ public class PerformHandler implements HttpHandler {
     public static class Request {
         public String mei;
         public String mpm;
+
+        // possible selection types
         public List<String> ids; 
         public List<String> mpmIds;
         public List<String> measures;
+        public Double from; 
+        public Double to;
+
         public Double exaggerate;
         public Double sketchiness;
         public Boolean exemplify;
-        public Double context;
+        public Boolean context;
         public Integer ppq;             // optional (default 720)
         public Integer movementIndex;   // optional (default 0)
     }

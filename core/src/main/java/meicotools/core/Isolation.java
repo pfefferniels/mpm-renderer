@@ -113,8 +113,16 @@ public class Isolation {
             for (int i=0; i<movementMap.size(); i++) {
                 MovementData dd = movementMap.getMovementDataOf(i);
                 if (mpmIDs.contains(dd.xmlId)) {
-                    if (dd.endDate > maxDate) {
-                        maxDate = dd.endDate;
+                    if (dd.position == 0 && dd.transitionTo == null) {
+                        // end of movement: consider only the start date
+                        if (dd.startDate > maxDate) {
+                            maxDate = dd.startDate;
+                        }
+                    }
+                    else {
+                        if (dd.endDate > maxDate) {
+                            maxDate = dd.endDate;
+                        }
                     }
                 }
             }
@@ -234,13 +242,10 @@ public class Isolation {
 
         double lastDate = relevantDates.get(relevantDates.size() - 1);
         double firstDate = relevantDates.get(0);
-        if ((lastDate - firstDate) <= 2880) {
-            return new double[] { firstDate, lastDate };
-        }
 
         double distance = lastDate - firstDate;
 
-        return new double[] { firstDate, firstDate + distance / 3.0 };
+        return new double[] { firstDate, Math.min(firstDate + distance, firstDate + 5760.0)  };
 
         /*
 
@@ -307,13 +312,18 @@ public class Isolation {
         boolean toRepeat = false;
         int toMeasure = 0;
 
-        for (String measure : measures) {
+        for (String measureInfo : measures) {
             boolean withinRepeat = false;
-            if (measure.endsWith("-rpt")) {
-                measure = measure.substring(0, measure.length() - 4);
+            if (measureInfo.endsWith("-rpt")) {
+                measureInfo = measureInfo.substring(0, measureInfo.length() - 4);
                 fromRepeat = true;
             }
-            int m = Integer.parseInt(measure);
+            String[] parts = measureInfo.split("/");
+            if (parts.length != 2) {
+                throw new Error("Invalid measure specification: " + measureInfo);
+            }
+
+            int m = Integer.parseInt(parts[0]);
             if (m < fromMeasure) {
                 fromMeasure = m;
                 fromRepeat = withinRepeat;

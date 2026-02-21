@@ -32,6 +32,20 @@ import nu.xom.Element;
 import nu.xom.Attribute;
 
 public class ModifyService {
+  private static final double MIN_BPM = 10.0;
+  private static final double MAX_BPM = 400.0;
+  private static final double MIN_VELOCITY = 1.0;
+  private static final double MAX_VELOCITY = 127.0;
+  private static final double MIN_RUBATO_INTENSITY = 0.1;
+  private static final double MAX_RUBATO_INTENSITY = 5.0;
+  private static final double MIN_FRAME_LENGTH = 1.0;
+  private static final double MAX_FRAME_LENGTH = 2000.0;
+  private static final double MIN_SCALE_FACTOR = 0.01;
+  private static final double MAX_SCALE_FACTOR = 50.0;
+
+  private static double clamp(double value, double min, double max) {
+    return Math.max(min, Math.min(max, value));
+  }
   public static class ModifyParams {
     public Increase increase;
     public Exaggerate exaggerate;
@@ -228,18 +242,20 @@ public class ModifyService {
     }
   }
 
-  // Apply scaling around mean for tempo transitions
+  // Apply log-space scaling around geometric mean for dynamics transitions
   public static void exaggarateDynamics(DynamicsMap dynamicsMap, double scale) {
     for (int i = 0; i < dynamicsMap.size(); i++) {
       DynamicsData dd = dynamicsMap.getDynamicsDataOf(i);
       if (dd == null) continue;
 
-      // We want entries that have both volume and transitionTo (i.e., a transition segment)
       if (dd.volume == null || dd.transitionTo == null) continue;
+      if (dd.volume <= 0 || dd.transitionTo <= 0) continue;
 
-      double mean = (dd.volume + dd.transitionTo) / 2.0;
-      double newVolume = mean + (dd.volume - mean) * scale;
-      double newTo = mean + (dd.transitionTo - mean) * scale;
+      double logVol = Math.log(dd.volume);
+      double logTo = Math.log(dd.transitionTo);
+      double logMean = (logVol + logTo) / 2.0;
+      double newVolume = clamp(Math.exp(logMean + (logVol - logMean) * scale), MIN_VELOCITY, MAX_VELOCITY);
+      double newTo = clamp(Math.exp(logMean + (logTo - logMean) * scale), MIN_VELOCITY, MAX_VELOCITY);
 
       Element el = dynamicsMap.getElement(i);
       el.addAttribute(new Attribute("volume", Double.toString(newVolume)));
@@ -247,16 +263,19 @@ public class ModifyService {
     }
   }
 
-  // Apply scaling around mean for tempo transitions
+  // Apply log-space scaling around geometric mean for tempo transitions
   public static void exaggarateTempo(TempoMap tempoMap, double scale) {
     for (int i = 0; i < tempoMap.size(); i++) {
       TempoData td = tempoMap.getTempoDataOf(i);
       if (td == null) continue;
       if (td.bpm == null || td.transitionTo == null) continue;
+      if (td.bpm <= 0 || td.transitionTo <= 0) continue;
 
-      double mean = (td.bpm + td.transitionTo) / 2.0;
-      double newBpm = mean + (td.bpm - mean) * scale;
-      double newTo = mean + (td.transitionTo - mean) * scale;
+      double logBpm = Math.log(td.bpm);
+      double logTo = Math.log(td.transitionTo);
+      double logMean = (logBpm + logTo) / 2.0;
+      double newBpm = clamp(Math.exp(logMean + (logBpm - logMean) * scale), MIN_BPM, MAX_BPM);
+      double newTo = clamp(Math.exp(logMean + (logTo - logMean) * scale), MIN_BPM, MAX_BPM);
 
       Element el = tempoMap.getElement(i);
       el.addAttribute(new Attribute("bpm", Double.toString(newBpm)));
@@ -270,26 +289,45 @@ public class ModifyService {
     }
   }
 
-  // Apply (x - 1) * scale + 1 for rubato intensity where present.
+  // Apply power-based scaling for rubato intensity
   public static void exaggerateRubatoIntensity(RubatoMap rubatoMap, double scale) {
     for (int i = 0; i < rubatoMap.size(); i++) {
       RubatoData rd = rubatoMap.getRubatoDataOf(i);
       if (rd == null || rd.intensity == null) continue;
+      if (rd.intensity <= 0) continue;
 
-      double newIntensity = (rd.intensity - 1.0) * scale + 1.0;
+      double newIntensity = clamp(Math.pow(rd.intensity, scale), MIN_RUBATO_INTENSITY, MAX_RUBATO_INTENSITY);
       Element el = rubatoMap.getElement(i);
-      el.addAttribute(new Attribute("intensity", Double.toString(newIntensity)));      
+      el.addAttribute(new Attribute("intensity", Double.toString(newIntensity)));
     }
   }
 
-  // Multiply @frameLength by scale
+  // Log-space scaling of @frameLength around geometric mean of all frame lengths
   public static void exaggerateTemporalSpread(OrnamentationStyle style, double scale) {
     HashMap<String, OrnamentDef> defs = style.getAllDefs();
+
+    // Collect valid frame lengths to compute geometric mean
+    List<Double> lengths = new ArrayList<>();
     for (OrnamentDef def : defs.values()) {
       TemporalSpread ts = def.getTemporalSpread();
-      if (ts != null) {
-        double oldLen = ts.getFrameLength();
-        ts.setFrameLength(oldLen * scale);
+      if (ts != null && ts.getFrameLength() > 0) {
+        lengths.add(ts.getFrameLength());
+      }
+    }
+    if (lengths.isEmpty()) return;
+
+    double logSum = 0;
+    for (double len : lengths) {
+      logSum += Math.log(len);
+    }
+    double logMean = logSum / lengths.size();
+
+    for (OrnamentDef def : defs.values()) {
+      TemporalSpread ts = def.getTemporalSpread();
+      if (ts != null && ts.getFrameLength() > 0) {
+        double logLen = Math.log(ts.getFrameLength());
+        double newLen = clamp(Math.exp(logMean + (logLen - logMean) * scale), MIN_FRAME_LENGTH, MAX_FRAME_LENGTH);
+        ts.setFrameLength(newLen);
       }
     }
   }
@@ -301,7 +339,7 @@ public class ModifyService {
       if (scale == null) continue;
 
       double oldScale = Double.parseDouble(scale.getValue());
-      el.addAttribute(new Attribute("scale", Double.toString(oldScale * f)));
+      el.addAttribute(new Attribute("scale", Double.toString(clamp(oldScale * f, MIN_SCALE_FACTOR, MAX_SCALE_FACTOR))));
     }
   }
 
@@ -312,7 +350,7 @@ public class ModifyService {
       if (scale == null) continue;
 
       double oldScale = Double.parseDouble(scale.getValue());
-      el.addAttribute(new Attribute("scale", Double.toString(oldScale * f)));
+      el.addAttribute(new Attribute("scale", Double.toString(clamp(oldScale * f, MIN_SCALE_FACTOR, MAX_SCALE_FACTOR))));
     }
   }
 

@@ -1,17 +1,17 @@
 package meicotools.core;
 
+import java.io.File;
 import java.util.ArrayList;
 import java.util.Collections;
-import java.util.HashSet;
 import java.util.List;
 import java.util.Set;
-import java.util.stream.Collectors;
 
 import meico.mei.Mei;
 import meico.mpm.Mpm;
 import meico.mpm.elements.Dated;
 import meico.mpm.elements.Performance;
 import meico.mpm.elements.maps.DynamicsMap;
+import meico.mpm.elements.maps.GenericMap;
 import meico.mpm.elements.maps.MetricalAccentuationMap;
 import meico.mpm.elements.maps.MovementMap;
 import meico.mpm.elements.maps.RubatoMap;
@@ -22,7 +22,6 @@ import meico.mpm.elements.maps.data.MovementData;
 import meico.mpm.elements.maps.data.RubatoData;
 import meico.mpm.elements.maps.data.TempoData;
 import meico.msm.Msm;
-import net.sf.saxon.expr.Component.M;
 import nu.xom.Attribute;
 import nu.xom.Element;
 import nu.xom.Node;
@@ -30,14 +29,136 @@ import nu.xom.Nodes;
 import nu.xom.XPathContext;
 
 public class Isolation {
+    private static final String XML_NS = "http://www.w3.org/XML/1998/namespace";
+    private static final double MAX_EXEMPLIFY_DURATION = 5760.0;
+    private static final int DEFAULT_PPQ = 720;
+
+    public static double computeWeightedAverageTempo(TempoMap tempoMap) {
+        double totalWeight = 0.0;
+        double weightedSum = 0.0;
+        double lastDuration = 1.0;
+
+        for (int i = 0; i < tempoMap.size(); i++) {
+            TempoData td = tempoMap.getTempoDataOf(i);
+            if (td == null || td.bpm == null) continue;
+
+            double duration;
+            if (i + 1 < tempoMap.size()) {
+                TempoData next = tempoMap.getTempoDataOf(i + 1);
+                duration = next.startDate - td.startDate;
+            } else {
+                // Last element: reuse previous segment's duration
+                // (endDate is often Double.MAX_VALUE as a sentinel)
+                duration = lastDuration;
+            }
+
+            if (duration <= 0) continue;
+            lastDuration = duration;
+            weightedSum += td.bpm * duration;
+            totalWeight += duration;
+        }
+
+        if (totalWeight == 0.0) return 100.0;
+        return weightedSum / totalWeight;
+    }
+
+    public static double computeWeightedAverageDynamics(DynamicsMap dynamicsMap) {
+        double totalWeight = 0.0;
+        double weightedSum = 0.0;
+        double lastDuration = 1.0;
+
+        for (int i = 0; i < dynamicsMap.size(); i++) {
+            DynamicsData dd = dynamicsMap.getDynamicsDataOf(i);
+            if (dd == null || dd.volume == null) continue;
+
+            double duration;
+            if (i + 1 < dynamicsMap.size()) {
+                DynamicsData next = dynamicsMap.getDynamicsDataOf(i + 1);
+                duration = next.startDate - dd.startDate;
+            } else {
+                duration = lastDuration;
+            }
+
+            if (duration <= 0) continue;
+            lastDuration = duration;
+            weightedSum += dd.volume * duration;
+            totalWeight += duration;
+        }
+
+        if (totalWeight == 0.0) return 70.0;
+        return weightedSum / totalWeight;
+    }
+
+    public static Performance stripNonSelected(File mpmFile, Performance originalPerformance, Set<String> keepIds) throws Exception {
+
+        // Compute averages from original before stripping
+        TempoMap originalTempoMap = (TempoMap) originalPerformance.getGlobal().getDated().getMap(Mpm.TEMPO_MAP);
+        DynamicsMap originalDynamicsMap = (DynamicsMap) originalPerformance.getGlobal().getDated().getMap(Mpm.DYNAMICS_MAP);
+
+        double avgTempo = computeWeightedAverageTempo(originalTempoMap);
+        double avgDynamics = computeWeightedAverageDynamics(originalDynamicsMap);
+
+        // Reload a fresh copy to avoid mutating the original
+        Mpm clonedMpm = new Mpm(mpmFile);
+        Performance clonedPerf = clonedMpm.getPerformance(0);
+        Dated dated = clonedPerf.getGlobal().getDated();
+
+        // Strip non-selected elements from each map type
+        String[] mapTypes = {
+            Mpm.TEMPO_MAP, Mpm.DYNAMICS_MAP, Mpm.RUBATO_MAP,
+            Mpm.METRICAL_ACCENTUATION_MAP, Mpm.ORNAMENTATION_MAP,
+            Mpm.ARTICULATION_MAP, Mpm.MOVEMENT_MAP
+        };
+
+        for (String mapType : mapTypes) {
+            GenericMap map = dated.getMap(mapType);
+            if (map == null) continue;
+
+            for (int i = map.size() - 1; i >= 0; i--) {
+                Element el = map.getElement(i);
+                // Preserve <style> switch elements — they set the active style
+                // definition and are needed for style resolution in maps like
+                // metricalAccentuationMap and ornamentationMap.
+                if ("style".equals(el.getLocalName())) continue;
+
+                String xmlId = el.getAttributeValue("id", XML_NS);
+                if (xmlId == null || !keepIds.contains(xmlId)) {
+                    map.removeElement(i);
+                }
+            }
+        }
+
+        // Always insert neutral defaults at date 0 for required maps.
+        // Even if a selected element exists (e.g. dynamics_1440), notes before it
+        // need a baseline — otherwise meico defaults to velocity 100.
+        TempoMap tempoMap = (TempoMap) dated.getMap(Mpm.TEMPO_MAP);
+        if (tempoMap != null) {
+            boolean hasTempoAtZero = tempoMap.size() > 0
+                && tempoMap.getTempoDataOf(0) != null
+                && tempoMap.getTempoDataOf(0).startDate == 0.0;
+            if (!hasTempoAtZero) {
+                tempoMap.addTempo(0.0, Double.toString(avgTempo), 0.25);
+            }
+        }
+
+        DynamicsMap dynamicsMap = (DynamicsMap) dated.getMap(Mpm.DYNAMICS_MAP);
+        if (dynamicsMap != null) {
+            boolean hasDynamicsAtZero = dynamicsMap.size() > 0
+                && dynamicsMap.getDynamicsDataOf(0) != null
+                && dynamicsMap.getDynamicsDataOf(0).startDate == 0.0;
+            if (!hasDynamicsAtZero) {
+                dynamicsMap.addDynamics(0.0, Double.toString(avgDynamics));
+            }
+        }
+
+        return clonedPerf;
+    }
+
     public static double[] isolateInstructions(
         Performance performance,
         Set<String> mpmIDs
     ) {
-        System.out.println("Isolating MPM elements by xml:id: " + mpmIDs);
-
         // Find all dated elements and store those whose xml:id is in mpmIDs
-        final String XML_NS = "http://www.w3.org/XML/1998/namespace";
         Nodes candidates = performance.getXml().query("descendant::*[@date]");
         List<Element> selectedElements = new ArrayList<>();
         for (int i = 0; i < candidates.size(); i++) {
@@ -47,13 +168,6 @@ public class Isolation {
                 selectedElements.add(el);
             }
         }
-
-        System.out.println("Found " + selectedElements.size() + " matching elements: " +
-            selectedElements
-                .stream()
-                .map(e -> e.getAttributeValue("id", XML_NS))
-                .collect(Collectors.toList())
-        );
 
         if (selectedElements.isEmpty()) {
             throw new IllegalArgumentException("No matching MPM elements found for the provided xml:id set.");
@@ -77,7 +191,6 @@ public class Isolation {
             }
         }
         maxDate += 1;
-        System.out.println("Starting with minDate=" + minDate + " maxDate=" + maxDate);
 
         // 1) Deal with <tempo>
         {
@@ -86,7 +199,6 @@ public class Isolation {
                 TempoData td = tempoMap.getTempoDataOf(i);
                 if (mpmIDs.contains(td.xmlId)) {
                     if (td.endDate > maxDate) {
-                        System.out.println("(tempo) Adjusting maxDate from " + maxDate + " to " + td.endDate);
                         maxDate = td.endDate;
                     }
                 }
@@ -149,15 +261,13 @@ public class Isolation {
                 if (md == null) continue;
 
                 if (mpmIDs.contains(md.xmlId)) {
-                    double length = (md.accentuationPatternDef.getLength() * 720 * 4) / 4.0; // 4.0 = denominator
+                    double length = md.accentuationPatternDef.getLength() * DEFAULT_PPQ;
                     if (md.startDate + length > maxDate) {
                         maxDate = md.startDate + length;
                     }
                 }
             }
         }
-
-        System.out.println("Final range after isolating MPM ids: minDate=" + minDate + " maxDate=" + maxDate);
 
         return new double[] {minDate, maxDate};
     }
@@ -167,15 +277,12 @@ public class Isolation {
         Set<String> keepIds
     ) {
         Element root = msm.getRootElement();
-
-        // XOM XPath search: find all note elements anywhere
         Nodes noteNodes = root.query("descendant::note");
-        System.out.println("Total notes before filtering: " + noteNodes.size());
         List<Element> toRemove = new ArrayList<>();
         List<Double> dates = new ArrayList<>();
         for (int i = 0; i < noteNodes.size(); i++) {
             Element note = (Element) noteNodes.get(i);
-            Attribute xmlId = note.getAttribute("id", "http://www.w3.org/XML/1998/namespace");
+            Attribute xmlId = note.getAttribute("id", XML_NS);
             if (xmlId == null) continue; // skip notes without xml:id
 
             String id = xmlId.getValue();
@@ -210,26 +317,24 @@ public class Isolation {
         ArrayList<Double> relevantDates = new ArrayList<Double>();
         Nodes nodes = performance.getXml().query("descendant::*[@date]");
         if (nodes.size() == 0) {
-            System.out.println("No dated elements in performance");
             return new double[] { 0.0, 0.0 };
         }
 
         for (Node node : nodes) {
             Element el = (Element) node;
             String dateStr = el.getAttributeValue("date");
-            String xmlId = el.getAttributeValue("id", "http://www.w3.org/XML/1998/namespace");
+            String xmlId = el.getAttributeValue("id", XML_NS);
             if (xmlId == null || !keepIds.contains(xmlId)) {
                 continue;
             }
 
             try {
-                Double d = Double.parseDouble(dateStr);
+                double d = Double.parseDouble(dateStr);
                 relevantDates.add(d);
             } catch (Exception ignore) {}
         }
 
         if (relevantDates.isEmpty()) {
-            System.out.println("This should not happen: no relevant dates found for the provided MPM IDs.");
             return new double[] {0.0, 0.0};
         }
 
@@ -240,42 +345,25 @@ public class Isolation {
             return new double[] {date, date + 1};
         }
 
-        double lastDate = relevantDates.get(relevantDates.size() - 1);
         double firstDate = relevantDates.get(0);
-
+        double lastDate = relevantDates.get(relevantDates.size() - 1);
         double distance = lastDate - firstDate;
 
-        return new double[] { firstDate, Math.min(firstDate + distance, firstDate + 5760.0)  };
-
-        /*
-
-        // Find the best cluster with at least 2 dates (smallest range)
-        double bestStart = relevantDates.get(0);
-        double bestEnd = relevantDates.get(1);
-        double bestRange = bestEnd - bestStart;
-
-        for (int i = 0; i < relevantDates.size() - 1; i++) {
-            for (int j = i + 1; j < relevantDates.size(); j++) {
-                double currentRange = relevantDates.get(j) - relevantDates.get(i);
-                if (currentRange < bestRange) {
-                    bestRange = currentRange;
-                    bestStart = relevantDates.get(i);
-                    bestEnd = relevantDates.get(j);
-                }
-            }
-        }
-
-        return new double[] { bestStart, bestEnd };*/
+        return new double[] { firstDate, Math.min(firstDate + distance, firstDate + MAX_EXEMPLIFY_DURATION) };
     }
 
     public static double[] contextualize(double[] range, double context, Performance perf) {
-        double contextInTicks = context * 4 * 720;
+        double contextInTicks = context * 4 * DEFAULT_PPQ;
         double start = Math.max(range[0] - contextInTicks, 0);
         double end = range[1] + (contextInTicks / 2.0);
 
-        // Make sure, that the bits around should be played somewhat quieter.
+        // Make the context around the selection quieter.
         Dated d = perf.getGlobal().getDated();
         DynamicsMap map = (DynamicsMap) d.getMap(Mpm.DYNAMICS_MAP);
+        if (map == null) {
+            map = DynamicsMap.createDynamicsMap();
+            d.addMap(map);
+        }
 
         DynamicsData startData = map.getDynamicsDataAt(range[0]);
         double startTarget = startData.getDynamicsAt(range[0]);
@@ -283,9 +371,6 @@ public class Isolation {
         DynamicsData endData = map.getDynamicsDataAt(range[1]);
         double endTarget = endData.getDynamicsAt(range[1]);
 
-        if (map == null) {
-            d.addMap(DynamicsMap.createDynamicsMap());
-        }
         map.addDynamics(start, "30.0", Double.toString(startTarget), 0.4, 0.0);
 
         for (int i = 0; i < map.size(); i++) {
@@ -320,7 +405,7 @@ public class Isolation {
             }
             String[] parts = measureInfo.split("/");
             if (parts.length != 2) {
-                throw new Error("Invalid measure specification: " + measureInfo);
+                throw new IllegalArgumentException("Invalid measure specification: " + measureInfo);
             }
 
             int m = Integer.parseInt(parts[0]);
@@ -337,13 +422,8 @@ public class Isolation {
         fromMeasure += 1;
         toMeasure += 1;
 
-        System.out.println("measures" + measures + " resolved to fromMeasure=" + fromMeasure + " " + toMeasure);
-
         double[] fromDates = getDatesForMeasure(mei, msm, fromMeasure, fromRepeat);
         double[] toDates = getDatesForMeasure(mei, msm, toMeasure, toRepeat);
-
-        System.out.println("Isolated measures " + fromMeasure + (fromRepeat ? "-rpt" : "") + " to " + toMeasure + (toRepeat ? "-rpt" : "") +
-            " corresponding to dates " + fromDates[0] + " to " + toDates[1]);
 
         return new double[] { fromDates[0], toDates[1] };
     }
@@ -351,14 +431,12 @@ public class Isolation {
     private static double[] getDatesForMeasure(Mei mei, Msm msm, int measure, boolean inRepeat) {
         XPathContext context = new XPathContext();
         context.addNamespace("mei", "http://www.music-encoding.org/ns/mei");
-        context.addNamespace("xml", "http://www.w3.org/XML/1998/namespace");
+        context.addNamespace("xml", XML_NS);
         Nodes nodes = mei.getRootElement().query("descendant::mei:measure[@n='" + measure + "']", context);
-        System.out.println("Found " + nodes.size() + " measure elements with n='" + measure + "' (inRepeat=" + inRepeat + ")");
         if (nodes.size() == 0) {
-            throw new Error("No measure with n='" + measure + "' found in MEI.");
+            throw new IllegalArgumentException("No measure with n='" + measure + "' found in MEI.");
         }
 
-        // Element nodes;
         Element measureEl = (Element) nodes.get(0);
         if (inRepeat && nodes.size() == 2) {
             // pick the one which is in the repeat
@@ -370,10 +448,8 @@ public class Isolation {
         double maxDate = 0.0;
         for (int i = 0; i < notes.size(); i++) {
             Element note = (Element) notes.get(i);
-            String xmlId = note.getAttributeValue("id", "http://www.w3.org/XML/1998/namespace");
+            String xmlId = note.getAttributeValue("id", XML_NS);
             if (xmlId == null) continue;
-
-            System.out.println("Test:" + msm.getRootElement().query("descendant::*[@xml:id]", context).size());
 
             Nodes msmNotes = msm.getRootElement().query("descendant::*[@xml:id='" + xmlId + "']", context);
             if (msmNotes.size() == 0) {
@@ -381,7 +457,6 @@ public class Isolation {
             }
 
             String date = ((Element) msmNotes.get(0)).getAttributeValue("date");
-            System.out.println("Note xml:id='" + xmlId + "' has date='" + date + "'");
             try {
                 double d = Double.parseDouble(date);
                 if (d < minDate) {
@@ -392,8 +467,6 @@ public class Isolation {
                 }
             } catch (Exception ignore) {}
         }
-
-        System.out.println("Measure " + measure + (inRepeat ? "-rpt" : "") + " has date range: " + minDate + " to " + maxDate);
 
         return new double[] { minDate, maxDate };
     }

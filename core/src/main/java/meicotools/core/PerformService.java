@@ -26,6 +26,10 @@ import java.util.*;
  *   - Exports expressive MIDI from the expressive MSM.
  */
 public class PerformService {
+    private static final String XML_NS = "http://www.w3.org/XML/1998/namespace";
+    private static final double MAX_EXEMPLIFY_DURATION = 5760.0;
+    private static final double CONTEXT_AMOUNT = 0.375;
+
     public enum SelectionType {
         NONE,
         NOTE_IDS,
@@ -39,7 +43,7 @@ public class PerformService {
         weights.tempo = 1.0;
         weights.dynamics = 1.1;
         weights.rubato = 0.2;
-        weights.accentuation = 1.8;
+        weights.accentuation = 1.3;
         weights.temporalSpread = 1.5;
         weights.dynamicsGradient = 0.3;
         weights.relativeDuration = 0.2;
@@ -59,7 +63,8 @@ public class PerformService {
         Double exaggerate,
         Double sketchiness,
         Boolean exemplify,
-        Boolean context
+        Boolean context,
+        Boolean isolate
     ) throws Exception {
         Mei mei = new Mei(meiFile);
         Msm msm = ConvertService.meiToMsm(meiFile, movementIndex);
@@ -70,15 +75,22 @@ public class PerformService {
             throw new IllegalStateException("No Performance found in MPM file.");
         }
 
+        // In isolation mode, strip non-selected instructions before rendering.
+        // Keep reference to original for range computation (stripping corrupts endDate values).
+        Performance originalPerformance = performance;
+        if (Boolean.TRUE.equals(isolate) && selectionType == SelectionType.MPM_IDS) {
+            performance = Isolation.stripNonSelected(mpmFile, originalPerformance, keepIds);
+        }
+
         ModifyParams params = new ModifyParams();
         if (exaggerate != null) {
             params.exaggerate = new Exaggerate(exaggerate);
             params.exaggerate.applyWeights(getDefaultWeights());
         }
 
-        if (selectionType == SelectionType.MPM_IDS && params.exaggerate != null) {
+        if (!Boolean.TRUE.equals(isolate) && selectionType == SelectionType.MPM_IDS && params.exaggerate != null) {
             params.exaggerate.scale(
-                Shader.bringOut(performance, keepIds, 0.2)
+                Shader.bringOut(performance, keepIds, 0.1)
             );
         }
 
@@ -94,7 +106,6 @@ public class PerformService {
         }
 
         Msm expressiveMsm = performance.perform(msm);
-        System.out.println("Rendered" + expressiveMsm.getRootElement().query("descendant::note").size() + "notes in expressive MSM.");
 
         if (!keepIds.isEmpty()) {
             double[] range = new double[] {};
@@ -102,10 +113,9 @@ public class PerformService {
                 range = Isolation.isolateNotes(expressiveMsm, keepIds);
             }
             else if (selectionType == SelectionType.MPM_IDS) {
-                range = Isolation.isolateInstructions(performance, keepIds);
+                range = Isolation.isolateInstructions(originalPerformance, keepIds);
             }
             else if (selectionType == SelectionType.MEASURES) {
-                System.out.println("Isolating measures: " + keepIds);
                 range = Isolation.isolateMeasures(mei, msm, keepIds);
             }
             else if (selectionType == SelectionType.RANGE) {
@@ -114,35 +124,31 @@ public class PerformService {
                 double to = Double.parseDouble(it.next());
                 range = new double[] { from, to };
             }
-            
+
             this.collectActiveNotes(expressiveMsm, range[0], range[1]);
             if (Boolean.TRUE.equals(exemplify) && selectionType == SelectionType.MPM_IDS) {
-                if ((range[1] - range[0]) > 5760.0) {
-                    range[1] = range[0] + 5760.0;
+                if ((range[1] - range[0]) > MAX_EXEMPLIFY_DURATION) {
+                    range[1] = range[0] + MAX_EXEMPLIFY_DURATION;
                 }
             }
             if (Boolean.TRUE.equals(context)) {
-                // the shorter the range, the more context we add
-                double contextAmount = 0.375;
-                range = Isolation.contextualize(range, contextAmount, performance);
+                range = Isolation.contextualize(range, CONTEXT_AMOUNT, performance);
             }
 
-            System.out.println("Final range: " + range[0] + " to " + range[1]);
             this.filterNotesByDate(expressiveMsm, range[0], range[1]);
             shiftOnsetsToFirstNote(expressiveMsm);
         }
 
-        // Make sure that we always use the MIDI channel 1. 
-        // Yamaha Disklavier expects this and ignores other channels.
+        // Yamaha Disklavier expects MIDI channel 0 and ignores other channels.
         for (Element part = expressiveMsm.getRootElement().getFirstChildElement("part"); part != null; part = Helper.getNextSiblingElement("part", part)) {
             Attribute existing = part.getAttribute("midi.channel");
             if (existing != null) {
-                System.out.println("Warning: Overriding existing midi.channel='" + existing.getValue() + "' with '0'");
                 part.removeAttribute(existing);
             }
             part.addAttribute(new Attribute("midi.channel", "0"));
         }
 
+        expressiveMsm.removeAllElements("section");
         return expressiveMsm.exportExpressiveMidi();
     }
 
@@ -157,7 +163,7 @@ public class PerformService {
             try {
                 double d = Double.parseDouble(dateStr);
                 if (d >= minDate && d < maxDate) {
-                    this.noteIDs.add(note.getAttribute("id", "http://www.w3.org/XML/1998/namespace").getValue());
+                    this.noteIDs.add(note.getAttribute("id", XML_NS).getValue());
                 }
             } catch (Exception ignore) {
             }
@@ -187,7 +193,6 @@ public class PerformService {
             Element parent = (Element) e.getParent();
             if (parent != null) parent.removeChild(e);
         }
-        System.out.println("Removed " + toRemoveByDate.size() + " elements with date > " + maxDate + " or < " + minDate);
 
         Nodes sectionEnd = root.query("descendant::section[@date.end]");
         for (int i = 0; i < sectionEnd.size(); i++) {

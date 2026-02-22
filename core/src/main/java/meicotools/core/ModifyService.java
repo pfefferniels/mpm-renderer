@@ -109,18 +109,7 @@ public class ModifyService {
     double imprecisionMs = 80.0;
     ImprecisionMap timingImprecision = ImprecisionMap.createImprecisionMap("timing");
     timingImprecision.addDistributionCompensatingTriangle(0.0, 4.0, -imprecisionMs, imprecisionMs, -imprecisionMs, imprecisionMs, 300.0);
-
-    /*
-    ImprecisionMap durationImprecision = ImprecisionMap.createImprecisionMap("toneduration");
-    durationImprecision.addDistributionCompensatingTriangle(0, 4.0, -imprecisionMs, 20.0, -imprecisionMs, 20.0, 300.0);
-
-    ImprecisionMap dynamicsImprecision = ImprecisionMap.createImprecisionMap("dynamics");
-    dynamicsImprecision.addDistributionGaussian(0, 4.0, 7.0, 7.0);
-    */
-
     perf.getGlobal().getDated().addMap(timingImprecision);
-    // perf.getGlobal().getDated().addMap(durationImprecision);
-    // perf.getGlobal().getDated().addMap(dynamicsImprecision);
   }
 
   public static void modify(Performance perf, ModifyParams params) throws Exception {
@@ -138,28 +127,20 @@ public class ModifyService {
         });
       }
       if (params.increase.imprecision != null) {
-//         forEachMap(perf, Mpm.IMPRECISION_MAP_TIMING, map -> {
-//           scaleTimingImprecision((ImprecisionMap) map, params.increase.imprecision);
-//         });
-// 
-//         forEachMap(perf, Mpm.IMPRECISION_MAP_TONEDURATION, map -> {
-//           scaleTimingImprecision((ImprecisionMap) map, params.increase.imprecision);
-//         });
-// 
-//         System.out.println("global dated imprecision maps added, now looks like this:" + perf.getGlobal().getDated().toXml());
+        // TODO: implement imprecision scaling
       }
     }
 
     if (params.exaggerate != null) {
       if (params.exaggerate.tempo != null) {
         forEachMap(perf, Mpm.TEMPO_MAP, map -> {
-          exaggarateTempo((TempoMap) map, params.exaggerate.tempo);
+          exaggerateTempo((TempoMap) map, params.exaggerate.tempo);
         });
       }
 
       if (params.exaggerate.dynamics != null) {
         forEachMap(perf, Mpm.DYNAMICS_MAP, map -> {
-          exaggarateDynamics((DynamicsMap) map, params.exaggerate.dynamics);
+          exaggerateDynamics((DynamicsMap) map, params.exaggerate.dynamics);
         });
       }
 
@@ -233,7 +214,6 @@ public class ModifyService {
       if (dd == null) continue;
 
       Element el = imprecisionMap.getElement(i);
-      System.out.println("Scaling imprecision lower limit " + dd.lowerLimit + " and upper limit " + dd.upperLimit + " by factor " + f);
       el.addAttribute(new Attribute("limit.lower", Double.toString(dd.lowerLimit * f)));
       el.addAttribute(new Attribute("limit.upper", Double.toString(dd.upperLimit * f)));
 
@@ -243,7 +223,7 @@ public class ModifyService {
   }
 
   // Apply log-space scaling around geometric mean for dynamics transitions
-  public static void exaggarateDynamics(DynamicsMap dynamicsMap, double scale) {
+  public static void exaggerateDynamics(DynamicsMap dynamicsMap, double scale) {
     for (int i = 0; i < dynamicsMap.size(); i++) {
       DynamicsData dd = dynamicsMap.getDynamicsDataOf(i);
       if (dd == null) continue;
@@ -264,7 +244,7 @@ public class ModifyService {
   }
 
   // Apply log-space scaling around geometric mean for tempo transitions
-  public static void exaggarateTempo(TempoMap tempoMap, double scale) {
+  public static void exaggerateTempo(TempoMap tempoMap, double scale) {
     for (int i = 0; i < tempoMap.size(); i++) {
       TempoData td = tempoMap.getTempoDataOf(i);
       if (td == null) continue;

@@ -4,24 +4,21 @@ import com.fasterxml.jackson.databind.DeserializationFeature;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.sun.net.httpserver.Headers;
 import com.sun.net.httpserver.HttpExchange;
-import com.sun.net.httpserver.HttpHandler;
 
 import meico.midi.Midi;
 import meicotools.core.PerformService;
 
 import java.io.*;
-import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.Base64;
-import java.util.Collections;
 import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Set;
 import java.util.stream.Collectors;
 
-public class PerformHandler implements HttpHandler {
+public class PerformHandler extends BaseHandler {
 
     private static final ObjectMapper MAPPER = new ObjectMapper()
             .configure(DeserializationFeature.FAIL_ON_UNKNOWN_PROPERTIES, false);
@@ -107,7 +104,8 @@ public class PerformHandler implements HttpHandler {
                         req.exaggerate,
                         req.sketchiness,
                         req.exemplify,
-                        req.context
+                        req.context,
+                        req.isolate
                 );
                 midi.writeMidi(outMidi.getAbsolutePath());
             } catch (Exception ex) {
@@ -165,6 +163,7 @@ public class PerformHandler implements HttpHandler {
         public Double sketchiness;
         public Boolean exemplify;
         public Boolean context;
+        public Boolean isolate;
         public Integer ppq;             // optional (default 720)
         public Integer movementIndex;   // optional (default 0)
     }
@@ -177,34 +176,4 @@ public class PerformHandler implements HttpHandler {
         public List<String> noteIDs;    // IDs of notes that were performed
     }
 
-    // --- helpers ---
-
-    private void writeCorsPreflight(HttpExchange exchange) throws IOException {
-        Headers h = exchange.getResponseHeaders();
-        addCorsHeaders(h);
-        h.add("Allow", "OPTIONS, POST");
-        h.add("Access-Control-Allow-Headers", "*");
-        exchange.sendResponseHeaders(204, -1);
-        exchange.close();
-    }
-
-    private void addCorsHeaders(Headers h) {
-        h.add("Access-Control-Allow-Origin", "*");
-        h.add("Access-Control-Allow-Credentials", "true");
-    }
-
-    private void sendText(HttpExchange ex, int status, String msg) throws IOException {
-        Headers h = ex.getResponseHeaders();
-        h.add("Content-Type", "text/plain; charset=utf-8");
-        addCorsHeaders(h);
-        byte[] data = msg.getBytes(StandardCharsets.UTF_8);
-        ex.sendResponseHeaders(status, data.length);
-        try (OutputStream os = ex.getResponseBody()) { os.write(data); }
-    }
-
-    private void writeString(File f, String s) throws IOException {
-        try (Writer w = new OutputStreamWriter(new FileOutputStream(f), StandardCharsets.UTF_8)) {
-            w.write(s);
-        }
-    }
 }

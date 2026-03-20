@@ -239,7 +239,7 @@ public class ModifyServiceTest {
         params.exaggerate = new ModifyService.Exaggerate(2.0);
         params.exaggerate.applyWeights(PerformService.getDefaultWeights());
 
-        ModifyService.modify(performance, params);
+        ModifyService.modify(performance, params, 80.0);
 
         // After modify, tempo values should have changed (exaggeration applied)
         boolean changed = false;

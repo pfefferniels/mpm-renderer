@@ -30,6 +30,12 @@ public class PerformService {
     private static final double MAX_EXEMPLIFY_DURATION = 5760.0;
     private static final double CONTEXT_AMOUNT = 0.375;
 
+    // Sketchiness curve exponents — higher = grows faster with sketchiness
+    private static final double SKETCH_TEMPO_EXP = 0.6;
+    private static final double SKETCH_RUBATO_EXP = 0.7;
+    private static final double SKETCH_DYNAMICS_EXP = 0.5;
+    private static final double SKETCH_IMPRECISION_BASE_MS = 80.0;
+
     public enum SelectionType {
         NONE,
         NOTE_IDS,
@@ -94,15 +100,22 @@ public class PerformService {
             );
         }
 
-        if (sketchiness != null && sketchiness > 1.0) {
+        double s = (sketchiness != null && sketchiness > 1.0) ? sketchiness : 1.0;
+        double imprecisionMs = SKETCH_IMPRECISION_BASE_MS * Math.log(s + 1.0) / Math.log(2.0);
+
+        if (s > 1.0) {
             params.increase = new Increase();
-            params.increase.tempo = sketchiness;
-            params.increase.dynamics = Math.min(1.0, 1.0 / sketchiness);
-            params.increase.imprecision = sketchiness;
+            params.increase.tempo = Math.pow(s, SKETCH_TEMPO_EXP);
+
+            if (params.exaggerate == null) {
+                params.exaggerate = new Exaggerate(1.0);
+            }
+            params.exaggerate.dynamics *= 1.0 / Math.pow(s, SKETCH_DYNAMICS_EXP);
+            params.exaggerate.rubato *= Math.pow(s, SKETCH_RUBATO_EXP);
         }
 
         if (params.increase != null || params.exaggerate != null) {
-            ModifyService.modify(performance, params);
+            ModifyService.modify(performance, params, imprecisionMs);
         }
 
         Msm expressiveMsm = performance.perform(msm);
@@ -229,21 +242,23 @@ public class PerformService {
         }
         if (!Double.isFinite(minMs) || minMs == 0.0) return;
 
-        for (int i = 0; i < noteNodes.size(); i++) {
-            Element note = (Element) noteNodes.get(i);
+        // Shift all dated elements (notes, positionMap entries, channelVolume entries, etc.)
+        Nodes allDated = root.query("descendant::*[@milliseconds.date]");
+        for (int i = 0; i < allDated.size(); i++) {
+            Element el = (Element) allDated.get(i);
 
-            String msStr = note.getAttributeValue("milliseconds.date");
+            String msStr = el.getAttributeValue("milliseconds.date");
             if (msStr != null) {
                 double t = Double.parseDouble(msStr);
                 double shifted = Math.max(0.0, t - minMs);
-                note.addAttribute(new nu.xom.Attribute("milliseconds.date", Double.toString(shifted)));
+                el.addAttribute(new nu.xom.Attribute("milliseconds.date", Double.toString(shifted)));
             }
 
-            String msEndStr = note.getAttributeValue("milliseconds.date.end");
+            String msEndStr = el.getAttributeValue("milliseconds.date.end");
             if (msEndStr != null) {
                 double tEnd = Double.parseDouble(msEndStr);
                 double shiftedEnd = Math.max(0.0, tEnd - minMs);
-                note.addAttribute(new nu.xom.Attribute("milliseconds.date.end", Double.toString(shiftedEnd)));
+                el.addAttribute(new nu.xom.Attribute("milliseconds.date.end", Double.toString(shiftedEnd)));
             }
         }
     }

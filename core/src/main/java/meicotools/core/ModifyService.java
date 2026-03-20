@@ -105,15 +105,14 @@ public class ModifyService {
     }
   }
 
-  public static void humanize(Performance perf) throws Exception {
-    double imprecisionMs = 80.0;
+  public static void humanize(Performance perf, double imprecisionMs) throws Exception {
     ImprecisionMap timingImprecision = ImprecisionMap.createImprecisionMap("timing");
     timingImprecision.addDistributionCompensatingTriangle(0.0, 4.0, -imprecisionMs, imprecisionMs, -imprecisionMs, imprecisionMs, 300.0);
     perf.getGlobal().getDated().addMap(timingImprecision);
   }
 
-  public static void modify(Performance perf, ModifyParams params) throws Exception {
-    humanize(perf);
+  public static void modify(Performance perf, ModifyParams params, double imprecisionMs) throws Exception {
+    humanize(perf, imprecisionMs);
 
     if (params.increase != null) {
       if (params.increase.tempo != null) {
@@ -127,7 +126,9 @@ public class ModifyService {
         });
       }
       if (params.increase.imprecision != null) {
-        // TODO: implement imprecision scaling
+        forEachMap(perf, Mpm.IMPRECISION_MAP_TIMING, map -> {
+          scaleTimingImprecision((ImprecisionMap) map, params.increase.imprecision);
+        });
       }
     }
 

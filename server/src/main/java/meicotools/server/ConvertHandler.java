@@ -17,6 +17,7 @@ public class ConvertHandler extends BaseHandler {
 
     @Override
     public void handle(HttpExchange exchange) throws IOException {
+        File tmpDir = null;
         try {
             String method = exchange.getRequestMethod();
             if ("OPTIONS".equalsIgnoreCase(method)) {
@@ -28,36 +29,38 @@ public class ConvertHandler extends BaseHandler {
                 return;
             }
 
-            // 1) Parse request
-            Request req = MAPPER.readValue(exchange.getRequestBody(), Request.class);
+            byte[] body = readBodyLimited(exchange);
+            if (body == null) {
+                sendText(exchange, 413, "Request body too large");
+                return;
+            }
+
+            Request req = MAPPER.readValue(body, Request.class);
             if (req.mei == null) {
                 sendText(exchange, 400, "Missing required field 'mei'.");
                 return;
             }
 
-            // 2) Write MEI to a temp file (ConvertService expects a File)
-            File tmpDir = Files.createTempDirectory("meico-convert").toFile();
+            tmpDir = Files.createTempDirectory("meico-convert").toFile();
             File meiFile = new File(tmpDir, "input.mei");
             writeString(meiFile, req.mei);
 
-            // 3) Convert MEI -> MSM
             Msm msm;
             try {
                 msm = ConvertService.meiToMsm(meiFile, 0);
             } catch (Exception ex) {
                 ex.printStackTrace();
-                sendText(exchange, 500, "Convert failed: " + ex.getMessage());
+                sendText(exchange, 500, "Convert failed");
                 return;
             }
 
-            // 4) Build JSON response (plain string MSM)
             Response payload = new Response();
             payload.msm = msm.toXML();
 
             byte[] json = MAPPER.writeValueAsBytes(payload);
 
             Headers h = exchange.getResponseHeaders();
-            addCorsHeaders(h);
+            addCorsHeaders(h, exchange);
             h.add("Content-Type", "application/json; charset=utf-8");
             exchange.sendResponseHeaders(200, json.length);
             try (OutputStream os = exchange.getResponseBody()) {
@@ -66,18 +69,18 @@ public class ConvertHandler extends BaseHandler {
 
         } catch (Exception ex) {
             ex.printStackTrace();
-            sendText(exchange, 500, "Internal Server Error: " + ex.getMessage());
+            sendText(exchange, 500, "Internal Server Error");
+        } finally {
+            deleteTempDir(tmpDir);
         }
     }
 
-    // --- DTOs ---
-
     public static class Request {
-        public String mei; // required
+        public String mei;
     }
 
     public static class Response {
-        public String msm; // MSM as text
+        public String msm;
     }
 
 }

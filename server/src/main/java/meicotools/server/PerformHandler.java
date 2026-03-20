@@ -25,6 +25,7 @@ public class PerformHandler extends BaseHandler {
 
     @Override
     public void handle(HttpExchange exchange) throws IOException {
+        File tmpDir = null;
         try {
             String method = exchange.getRequestMethod();
             if ("OPTIONS".equalsIgnoreCase(method)) {
@@ -36,14 +37,19 @@ public class PerformHandler extends BaseHandler {
                 return;
             }
 
-            // 1) Parse request
-            Request req = MAPPER.readValue(exchange.getRequestBody(), Request.class);
+            byte[] body = readBodyLimited(exchange);
+            if (body == null) {
+                sendText(exchange, 413, "Request body too large");
+                return;
+            }
+
+            Request req = MAPPER.readValue(body, Request.class);
             if (req.mei == null || req.mpm == null) {
                 sendText(exchange, 400, "Missing required fields 'mei' and 'mpm'.");
                 return;
             }
 
-            System.out.println("Received request: " + 
+            System.out.println("Received request: " +
                 "mei length=" + req.mei.length() +
                 ", mpm length=" + req.mpm.length() +
                 ", ids=" + (req.ids != null ? req.ids : "null") +
@@ -57,8 +63,7 @@ public class PerformHandler extends BaseHandler {
                 ", movementIndex=" + req.movementIndex
             );
 
-            // 2) Prepare temp files
-            File tmpDir     = Files.createTempDirectory("meico-perform").toFile();
+            tmpDir = Files.createTempDirectory("meico-perform").toFile();
             File meiFile    = new File(tmpDir, "input.mei");
             File mpmFile    = new File(tmpDir, "input.mpm");
             File outMidi    = new File(tmpDir, "result.mid");
@@ -90,8 +95,7 @@ public class PerformHandler extends BaseHandler {
             Set<String> selectionSet = selection.stream()
                 .filter(id -> id != null)
                 .collect(Collectors.toCollection(() -> new LinkedHashSet<String>()));
-            
-            // 3) Call service
+
             PerformService performService = new PerformService();
             try {
                 Midi midi = performService.perform(
@@ -110,16 +114,15 @@ public class PerformHandler extends BaseHandler {
                 midi.writeMidi(outMidi.getAbsolutePath());
             } catch (Exception ex) {
                 ex.printStackTrace();
-                sendText(exchange, 500, "Perform failed: " + ex.getMessage());
+                sendText(exchange, 500, "Perform failed");
                 return;
             }
 
             if (!outMidi.exists()) {
-                sendText(exchange, 500, "Missing outputs: expected result.mid.");
+                sendText(exchange, 500, "Perform failed");
                 return;
             }
 
-            // 4) Build JSON response
             byte[] midiBytes = Files.readAllBytes(outMidi.toPath());
             String midiB64   = Base64.getEncoder().encodeToString(midiBytes);
 
@@ -133,7 +136,7 @@ public class PerformHandler extends BaseHandler {
             byte[] json = MAPPER.writeValueAsBytes(payload);
 
             Headers h = exchange.getResponseHeaders();
-            addCorsHeaders(h);
+            addCorsHeaders(h, exchange);
             h.add("Content-Type", "application/json; charset=utf-8");
             exchange.sendResponseHeaders(200, json.length);
             try (OutputStream os = exchange.getResponseBody()) {
@@ -142,21 +145,20 @@ public class PerformHandler extends BaseHandler {
 
         } catch (Exception ex) {
             ex.printStackTrace();
-            sendText(exchange, 500, "Internal Server Error: " + ex.getMessage());
+            sendText(exchange, 500, "Internal Server Error");
+        } finally {
+            deleteTempDir(tmpDir);
         }
     }
-
-    // --- DTOs ---
 
     public static class Request {
         public String mei;
         public String mpm;
 
-        // possible selection types
-        public List<String> ids; 
+        public List<String> ids;
         public List<String> mpmIds;
         public List<String> measures;
-        public Double from; 
+        public Double from;
         public Double to;
 
         public Double exaggerate;
@@ -164,16 +166,16 @@ public class PerformHandler extends BaseHandler {
         public Boolean exemplify;
         public Boolean context;
         public Boolean isolate;
-        public Integer ppq;             // optional (default 720)
-        public Integer movementIndex;   // optional (default 0)
+        public Integer ppq;
+        public Integer movementIndex;
     }
 
     public static class Response {
-        public String midi_b64;         // base64-encoded MIDI bytes
-        public String filename;         // optional (e.g., "result.mid")
-        public Integer ppq;             // echo of effective params
-        public Integer movementIndex;   // echo of effective params
-        public List<String> noteIDs;    // IDs of notes that were performed
+        public String midi_b64;
+        public String filename;
+        public Integer ppq;
+        public Integer movementIndex;
+        public List<String> noteIDs;
     }
 
 }

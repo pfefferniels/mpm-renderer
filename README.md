@@ -1,19 +1,21 @@
-# mpm-renderer
+# meico-tools
 
-Renders given MSM and MPM files into MIDI using meico. Can be 
-used either as a web service or from the command-line. 
+Renders expressive MIDI based on MPM and MEI using [meico](https://github.com/cemfi/meico) — with support for isolation and exaggeration of individual performance parameters.
 
-To compile: 
+## Endpoints
+
+- **`/convert`** — MEI to MSM conversion
+- **`/perform`** — expressive MIDI rendering from MEI + MPM
+
+## Build & Run
+
 ```
 ./gradlew :server:shadowJar
-```
-
-To run:
-```
 java -jar server/build/libs/server-all.jar
 ```
 
-To test: 
+## Test
+
 ```
 ./gradlew test
 ```

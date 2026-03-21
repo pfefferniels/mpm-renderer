@@ -36,6 +36,8 @@ public class PerformHandler extends BaseHandler {
                 sendText(exchange, 405, "Method Not Allowed");
                 return;
             }
+            if (!enforceOrigin(exchange)) return;
+            if (!enforceRateLimit(exchange)) return;
 
             byte[] body = readBodyLimited(exchange);
             if (body == null) {
@@ -48,6 +50,9 @@ public class PerformHandler extends BaseHandler {
                 sendText(exchange, 400, "Missing required fields 'mei' and 'mpm'.");
                 return;
             }
+
+            validateXml(req.mei);
+            validateXml(req.mpm);
 
             System.out.println("Received request: " +
                 "mei length=" + req.mei.length() +

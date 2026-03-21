@@ -28,6 +28,8 @@ public class ConvertHandler extends BaseHandler {
                 sendText(exchange, 405, "Method Not Allowed");
                 return;
             }
+            if (!enforceOrigin(exchange)) return;
+            if (!enforceRateLimit(exchange)) return;
 
             byte[] body = readBodyLimited(exchange);
             if (body == null) {
@@ -40,6 +42,8 @@ public class ConvertHandler extends BaseHandler {
                 sendText(exchange, 400, "Missing required field 'mei'.");
                 return;
             }
+
+            validateXml(req.mei);
 
             tmpDir = Files.createTempDirectory("meico-convert").toFile();
             File meiFile = new File(tmpDir, "input.mei");

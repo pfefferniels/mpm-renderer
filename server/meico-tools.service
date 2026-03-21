@@ -1,0 +1,25 @@
+[Unit]
+Description=meico-tools API server
+After=network.target
+
+[Service]
+Type=simple
+User=meico-tools
+Group=meico-tools
+WorkingDirectory=/opt/meico-tools
+ExecStart=/usr/bin/java -Dport=8080 -jar /opt/meico-tools/meico-tools.jar
+Restart=on-failure
+RestartSec=5
+
+# Security hardening
+NoNewPrivileges=true
+ProtectSystem=strict
+ProtectHome=true
+ReadWritePaths=/opt/meico-tools
+PrivateTmp=true
+ProtectKernelTunables=true
+ProtectControlGroups=true
+RestrictRealtime=true
+
+[Install]
+WantedBy=multi-user.target

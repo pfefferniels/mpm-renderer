@@ -4,12 +4,15 @@ import com.sun.net.httpserver.Headers;
 import com.sun.net.httpserver.HttpExchange;
 import com.sun.net.httpserver.HttpHandler;
 
+import javax.xml.XMLConstants;
+import javax.xml.parsers.SAXParserFactory;
 import java.io.*;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.*;
 import java.nio.file.attribute.BasicFileAttributes;
-import java.util.Comparator;
 import java.util.Set;
+import org.xml.sax.InputSource;
+import org.xml.sax.helpers.DefaultHandler;
 
 public abstract class BaseHandler implements HttpHandler {
 
@@ -19,6 +22,7 @@ public abstract class BaseHandler implements HttpHandler {
     );
 
     protected static final int MAX_BODY_BYTES = 1_048_576; // 1 MB
+    protected static final RateLimiter RATE_LIMITER = new RateLimiter();
 
     protected void writeCorsPreflight(HttpExchange exchange) throws IOException {
         Headers h = exchange.getResponseHeaders();
@@ -40,6 +44,47 @@ public abstract class BaseHandler implements HttpHandler {
             return true;
         }
         return false;
+    }
+
+    protected boolean enforceOrigin(HttpExchange exchange) throws IOException {
+        String origin = exchange.getRequestHeaders().getFirst("Origin");
+        if (origin == null || !ALLOWED_ORIGINS.contains(origin)) {
+            sendText(exchange, 403, "Forbidden");
+            return false;
+        }
+        return true;
+    }
+
+    protected boolean enforceRateLimit(HttpExchange exchange) throws IOException {
+        String clientIp = getClientIp(exchange);
+        if (!RATE_LIMITER.isAllowed(clientIp)) {
+            sendText(exchange, 429, "Too Many Requests");
+            return false;
+        }
+        return true;
+    }
+
+    protected String getClientIp(HttpExchange exchange) {
+        String cfIp = exchange.getRequestHeaders().getFirst("CF-Connecting-IP");
+        if (cfIp != null && !cfIp.isBlank()) return cfIp.strip();
+
+        String xff = exchange.getRequestHeaders().getFirst("X-Forwarded-For");
+        if (xff != null && !xff.isBlank()) return xff.split(",")[0].strip();
+
+        return exchange.getRemoteAddress().getAddress().getHostAddress();
+    }
+
+    protected void validateXml(String xml) throws IOException {
+        try {
+            SAXParserFactory factory = SAXParserFactory.newInstance();
+            factory.setFeature("http://apache.org/xml/features/disallow-doctype-decl", true);
+            factory.setFeature("http://xml.org/sax/features/external-general-entities", false);
+            factory.setFeature("http://xml.org/sax/features/external-parameter-entities", false);
+            factory.setFeature(XMLConstants.FEATURE_SECURE_PROCESSING, true);
+            factory.newSAXParser().parse(new InputSource(new StringReader(xml)), new DefaultHandler());
+        } catch (Exception e) {
+            throw new IOException("Invalid XML");
+        }
     }
 
     protected void sendText(HttpExchange ex, int status, String msg) throws IOException {

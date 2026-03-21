@@ -27,5 +27,15 @@ jobs:
           echo "$SSH_KEY" > ~/.ssh/deploy_key
           chmod 600 ~/.ssh/deploy_key
           ssh-keyscan -H "$HOST" >> ~/.ssh/known_hosts 2>/dev/null
+
+          # Ensure dedicated service user exists
+          ssh -i ~/.ssh/deploy_key root@"$HOST" \
+            'id -u meico-tools &>/dev/null || useradd -r -s /usr/sbin/nologin -d /opt/meico-tools meico-tools'
+
+          # Deploy JAR and systemd unit
           scp -i ~/.ssh/deploy_key server/build/libs/server-all.jar root@"$HOST":/opt/meico-tools/meico-tools.jar
-          ssh -i ~/.ssh/deploy_key root@"$HOST" 'systemctl restart meico-tools'
+          scp -i ~/.ssh/deploy_key server/meico-tools.service root@"$HOST":/etc/systemd/system/meico-tools.service
+
+          # Set ownership and restart
+          ssh -i ~/.ssh/deploy_key root@"$HOST" \
+            'chown -R meico-tools:meico-tools /opt/meico-tools && systemctl daemon-reload && systemctl enable meico-tools && systemctl restart meico-tools'

@@ -10,16 +10,31 @@ import java.io.*;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.*;
 import java.nio.file.attribute.BasicFileAttributes;
+import java.util.HashSet;
 import java.util.Set;
 import org.xml.sax.InputSource;
 import org.xml.sax.helpers.DefaultHandler;
 
 public abstract class BaseHandler implements HttpHandler {
 
-    private static final Set<String> ALLOWED_ORIGINS = Set.of(
-            "https://listen.welte225.org",
-            "https://play.welte225.org"
-    );
+    private static final Set<String> ALLOWED_ORIGINS = buildAllowedOrigins();
+
+    private static Set<String> buildAllowedOrigins() {
+        String env = System.getenv("ALLOWED_ORIGINS");
+        if (env == null || env.isBlank()) {
+            System.err.println("WARNING: ALLOWED_ORIGINS not set — all cross-origin requests will be rejected");
+            return Set.of();
+        }
+        Set<String> origins = new HashSet<>();
+        for (String o : env.split(",")) {
+            String trimmed = o.strip();
+            if (!trimmed.isEmpty()) {
+                origins.add(trimmed);
+            }
+        }
+        System.out.println("CORS allowed origins: " + origins);
+        return Set.copyOf(origins);
+    }
 
     protected static final int MAX_BODY_BYTES = 1_048_576; // 1 MB
     protected static final RateLimiter RATE_LIMITER = new RateLimiter();

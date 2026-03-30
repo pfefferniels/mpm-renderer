@@ -7,6 +7,7 @@ Type=simple
 User=meico-tools
 Group=meico-tools
 WorkingDirectory=/opt/meico-tools
+Environment=ALLOWED_ORIGINS=https://listen.welte225.org,https://play.welte225.org
 ExecStart=/usr/bin/java -Dport=8080 -jar /opt/meico-tools/meico-tools.jar
 Restart=on-failure
 RestartSec=5

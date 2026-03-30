@@ -11,8 +11,10 @@ Renders expressive MIDI based on MPM and MEI using [meico](https://github.com/ce
 
 ```
 ./gradlew :server:shadowJar
-java -jar server/build/libs/server-all.jar
+ALLOWED_ORIGINS=http://localhost:5173 java -jar server/build/libs/server-all.jar
 ```
+
+`ALLOWED_ORIGINS` is a comma-separated list of origins permitted for CORS requests. The server rejects all cross-origin requests if this variable is not set.
 
 ## Test
 

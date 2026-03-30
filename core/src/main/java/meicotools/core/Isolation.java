@@ -13,12 +13,10 @@ import meico.mpm.elements.Performance;
 import meico.mpm.elements.maps.DynamicsMap;
 import meico.mpm.elements.maps.GenericMap;
 import meico.mpm.elements.maps.MetricalAccentuationMap;
-import meico.mpm.elements.maps.MovementMap;
 import meico.mpm.elements.maps.RubatoMap;
 import meico.mpm.elements.maps.TempoMap;
 import meico.mpm.elements.maps.data.DynamicsData;
 import meico.mpm.elements.maps.data.MetricalAccentuationData;
-import meico.mpm.elements.maps.data.MovementData;
 import meico.mpm.elements.maps.data.RubatoData;
 import meico.mpm.elements.maps.data.TempoData;
 import meico.msm.Msm;
@@ -158,39 +156,55 @@ public class Isolation {
         Performance performance,
         Set<String> mpmIDs
     ) {
-        // Find all dated elements and store those whose xml:id is in mpmIDs
+        // Find all dated elements and classify selected ones.
+        // Movement elements (sustain pedal, pitch bend) produce MIDI CC events
+        // but should not drive the note selection range.
         Nodes candidates = performance.getXml().query("descendant::*[@date]");
-        List<Element> selectedElements = new ArrayList<>();
+        List<Element> noteDrivingElements = new ArrayList<>();
+        boolean hasAnyMatch = false;
+
         for (int i = 0; i < candidates.size(); i++) {
             Element el = (Element) candidates.get(i);
             String xmlId = el.getAttributeValue("id", XML_NS);
             if (xmlId != null && mpmIDs.contains(xmlId)) {
-                selectedElements.add(el);
+                hasAnyMatch = true;
+                if (!"movement".equals(el.getLocalName())) {
+                    noteDrivingElements.add(el);
+                }
             }
         }
 
-        if (selectedElements.isEmpty()) {
+        if (!hasAnyMatch) {
             throw new IllegalArgumentException("No matching MPM elements found for the provided xml:id set.");
+        }
+
+        // Movements-only selection: no notes, just pedal MIDI events in silence
+        if (noteDrivingElements.isEmpty()) {
+            return new double[] { 0.0, 0.0 };
         }
 
         double minDate = Double.POSITIVE_INFINITY;
         double maxDate = 0.0;
 
-        for (Element el : selectedElements) {
+        for (Element el : noteDrivingElements) {
             String dateStr = el.getAttributeValue("date");
             if (dateStr != null) {
-            try {
-                double d = Double.parseDouble(dateStr);
-                if (d < minDate) {
-                    minDate = d;
-                }
-                if (d > maxDate) {
-                    maxDate = d;
-                }
-            } catch (Exception ignore) {}
+                try {
+                    double d = Double.parseDouble(dateStr);
+                    if (d < minDate) {
+                        minDate = d;
+                    }
+                    if (d > maxDate) {
+                        maxDate = d;
+                    }
+                } catch (Exception ignore) {}
             }
         }
         maxDate += 1;
+
+        // Extend maxDate for instruction types whose effect spans beyond their start date.
+        // Movement elements are intentionally excluded — they produce MIDI CC events
+        // but should not cause additional notes to appear in the rendering.
 
         // 1) Deal with <tempo>
         {
@@ -217,30 +231,9 @@ public class Isolation {
                     }
                 }
             }
-        } 
-
-        // 3) Deal with <movement>
-        {
-            MovementMap movementMap = (MovementMap) performance.getGlobal().getDated().getMap(Mpm.MOVEMENT_MAP);
-            for (int i=0; i<movementMap.size(); i++) {
-                MovementData dd = movementMap.getMovementDataOf(i);
-                if (mpmIDs.contains(dd.xmlId)) {
-                    if (dd.position == 0 && dd.transitionTo == null) {
-                        // end of movement: consider only the start date
-                        if (dd.startDate > maxDate) {
-                            maxDate = dd.startDate;
-                        }
-                    }
-                    else {
-                        if (dd.endDate > maxDate) {
-                            maxDate = dd.endDate;
-                        }
-                    }
-                }
-            }
         }
 
-        // 4) Deal <rubato>
+        // 3) Deal with <rubato>
         {
             RubatoMap rubatoMap = (RubatoMap) performance.getGlobal().getDated().getMap(Mpm.RUBATO_MAP);
             for (int i=0; i<rubatoMap.size(); i++) {
@@ -253,7 +246,7 @@ public class Isolation {
             }
         }
 
-        // 5) Deal with <metricalAccentuation>
+        // 4) Deal with <metricalAccentuation>
         {
             MetricalAccentuationMap metricalAccentuationMap = (MetricalAccentuationMap) performance.getGlobal().getDated().getMap(Mpm.METRICAL_ACCENTUATION_MAP);
             for (int i=0; i<metricalAccentuationMap.size(); i++) {

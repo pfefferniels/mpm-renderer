@@ -149,7 +149,72 @@ public class Isolation {
             }
         }
 
+        // Restore endDate bounds for transition instructions whose successors were
+        // stripped.  meico computes endDate from the next element in the map — when
+        // the successor is removed, endDate becomes Double.MAX_VALUE, stretching the
+        // transition curve over an infinite range and flattening it.  Fix: insert a
+        // constant-value cap at the original endDate so meico recomputes correctly.
+        capTransitionEndDates(originalPerformance, dated, keepIds);
+
         return clonedPerf;
+    }
+
+    private static void capTransitionEndDates(Performance originalPerformance, Dated strippedDated, Set<String> keepIds) {
+        // Tempo transitions
+        TempoMap origTempoMap = (TempoMap) originalPerformance.getGlobal().getDated().getMap(Mpm.TEMPO_MAP);
+        TempoMap strippedTempoMap = (TempoMap) strippedDated.getMap(Mpm.TEMPO_MAP);
+        if (origTempoMap != null && strippedTempoMap != null) {
+            for (int i = 0; i < origTempoMap.size(); i++) {
+                TempoData origTd = origTempoMap.getTempoDataOf(i);
+                if (origTd == null || origTd.xmlId == null) continue;
+                if (!keepIds.contains(origTd.xmlId)) continue;
+                if (origTd.transitionTo == null) continue;
+
+                double origEndDate = origTd.endDate;
+                if (origEndDate <= origTd.startDate || origEndDate >= Double.MAX_VALUE / 2) continue;
+
+                boolean hasCap = false;
+                for (int j = 0; j < strippedTempoMap.size(); j++) {
+                    TempoData std = strippedTempoMap.getTempoDataOf(j);
+                    if (std != null && std.startDate >= origEndDate - 0.5) {
+                        hasCap = true;
+                        break;
+                    }
+                }
+
+                if (!hasCap) {
+                    strippedTempoMap.addTempo(origEndDate, Double.toString(origTd.transitionTo), origTd.beatLength);
+                }
+            }
+        }
+
+        // Dynamics transitions
+        DynamicsMap origDynMap = (DynamicsMap) originalPerformance.getGlobal().getDated().getMap(Mpm.DYNAMICS_MAP);
+        DynamicsMap strippedDynMap = (DynamicsMap) strippedDated.getMap(Mpm.DYNAMICS_MAP);
+        if (origDynMap != null && strippedDynMap != null) {
+            for (int i = 0; i < origDynMap.size(); i++) {
+                DynamicsData origDd = origDynMap.getDynamicsDataOf(i);
+                if (origDd == null || origDd.xmlId == null) continue;
+                if (!keepIds.contains(origDd.xmlId)) continue;
+                if (origDd.transitionTo == null) continue;
+
+                double origEndDate = origDd.endDate;
+                if (origEndDate <= origDd.startDate || origEndDate >= Double.MAX_VALUE / 2) continue;
+
+                boolean hasCap = false;
+                for (int j = 0; j < strippedDynMap.size(); j++) {
+                    DynamicsData sdd = strippedDynMap.getDynamicsDataOf(j);
+                    if (sdd != null && sdd.startDate >= origEndDate - 0.5) {
+                        hasCap = true;
+                        break;
+                    }
+                }
+
+                if (!hasCap) {
+                    strippedDynMap.addDynamics(origEndDate, Double.toString(origDd.transitionTo));
+                }
+            }
+        }
     }
 
     public static double[] isolateInstructions(

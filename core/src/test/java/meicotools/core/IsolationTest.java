@@ -13,6 +13,7 @@ import meico.mpm.elements.maps.TempoMap;
 import meico.mpm.elements.maps.DynamicsMap;
 import meico.mpm.elements.maps.RubatoMap;
 import meico.mpm.elements.maps.data.TempoData;
+import meico.mpm.elements.maps.data.DynamicsData;
 import meico.msm.Msm;
 import nu.xom.Element;
 import nu.xom.Nodes;
@@ -148,15 +149,19 @@ public class IsolationTest {
         assertTrue(Double.isFinite(neutralTempo.bpm), "Neutral tempo BPM should be finite");
         assertEquals(0.0, neutralTempo.startDate, "Neutral tempo should start at date 0");
 
-        // Dynamics map: dynamics_2520 selected + neutral default at date 0 → 2 elements
+        // Dynamics map: dynamics_2520 selected + neutral default at date 0
+        // + cap at endDate (3600) for the transition → 3 elements
         DynamicsMap dynamicsMap = (DynamicsMap) stripped.getGlobal().getDated().getMap(Mpm.DYNAMICS_MAP);
-        assertEquals(2, dynamicsMap.size(), "Dynamics map should have neutral default + selected element");
+        assertEquals(3, dynamicsMap.size(), "Dynamics map should have neutral default + selected element + transition cap");
         // First element should be the neutral default at date 0
         assertEquals(0.0, dynamicsMap.getDynamicsDataOf(0).startDate, "First dynamics element should be at date 0");
         // Second element should be the selected one
         Element dynEl = dynamicsMap.getElement(1);
         String dynId = dynEl.getAttributeValue("id", "http://www.w3.org/XML/1998/namespace");
         assertEquals("dynamics_2520", dynId, "Second dynamics element should be dynamics_2520");
+        // Third element should be the transition cap at the original endDate
+        DynamicsData capDyn = dynamicsMap.getDynamicsDataOf(2);
+        assertEquals(3600.0, capDyn.startDate, 0.01, "Cap dynamics should be at original endDate 3600");
 
         // Rubato map: rubato_3600 selected → should have exactly 1 element
         RubatoMap rubatoMap = (RubatoMap) stripped.getGlobal().getDated().getMap(Mpm.RUBATO_MAP);
@@ -476,6 +481,94 @@ public class IsolationTest {
         int noteOnCount = countNoteOns(seq);
         assertTrue(noteOnCount > 0, "Note-driving selection should produce notes in MIDI");
         assertFalse(service.noteIDs.isEmpty(), "Note IDs should be collected");
+    }
+
+    @Test
+    void testStripNonSelected_tempoEndDateIsPreserved() throws Exception {
+        ClassLoader classLoader = IsolationTest.class.getClassLoader();
+        File mpmFile = new File(classLoader.getResource("input.mpm").getFile());
+
+        // tempo_3600 originally has endDate=5760 (the date of the next tempo).
+        // After stripping, its successor is gone — verify endDate is NOT recomputed
+        // to some large sentinel value.
+        Performance stripped = Isolation.stripNonSelected(mpmFile, performance, Set.of("tempo_3600"));
+
+        TempoMap tempoMap = (TempoMap) stripped.getGlobal().getDated().getMap(Mpm.TEMPO_MAP);
+
+        // Should have: [neutral_avg at 0, tempo_3600 at 3600]
+        TempoData td3600 = null;
+        for (int i = 0; i < tempoMap.size(); i++) {
+            TempoData td = tempoMap.getTempoDataOf(i);
+            if (td != null && td.startDate == 3600.0) {
+                td3600 = td;
+                break;
+            }
+        }
+
+        assertNotNull(td3600, "tempo_3600 should be present after stripping");
+        System.out.println("tempo_3600 endDate after stripping: " + td3600.endDate);
+        System.out.println("tempo_3600 bpm: " + td3600.bpm + " → " + td3600.transitionTo);
+
+        // endDate should be 5760 (original), NOT Double.MAX_VALUE or similar
+        assertTrue(td3600.endDate < 100000,
+            "endDate should be preserved from XML, got: " + td3600.endDate);
+        assertEquals(5760.0, td3600.endDate, 0.01,
+            "endDate should be 5760 (original value from XML)");
+    }
+
+    @Test
+    void testIsolatedTempo_transitionShapeIsPreserved() throws Exception {
+        // tempo_3600 transitions from 39.26 BPM to 47.77 BPM (getting faster).
+        // Before the endDate fix, the transition was stretched to infinity,
+        // making the tempo essentially constant — IOIs would be uniform.
+        // After the fix, notes should get closer together as tempo increases.
+        ClassLoader classLoader = IsolationTest.class.getClassLoader();
+        File mpmFile = new File(classLoader.getResource("input.mpm").getFile());
+        File meiFile = new File(classLoader.getResource("input.mei").getFile());
+
+        Msm msm2 = ConvertService.meiToMsm(meiFile, 0);
+        Mpm freshMpm = new Mpm(mpmFile);
+        Performance freshPerf = freshMpm.getPerformance(0);
+        Performance isolated = Isolation.stripNonSelected(mpmFile, freshPerf, Set.of("tempo_3600"));
+        Msm isoMsm = isolated.perform(msm2);
+
+        double[] iois = collectIOIs(isoMsm, 3600.0, 5760.0);
+        assertTrue(iois.length >= 3, "Should have enough notes for IOI comparison, got " + iois.length);
+
+        // Find first and last non-trivial IOIs
+        double firstIOI = -1, lastIOI = -1;
+        for (double ioi : iois) {
+            if (ioi > 1.0) { firstIOI = ioi; break; }
+        }
+        for (int i = iois.length - 1; i >= 0; i--) {
+            if (iois[i] > 1.0) { lastIOI = iois[i]; break; }
+        }
+
+        assertTrue(firstIOI > 0 && lastIOI > 0, "Should have non-trivial IOIs");
+        // Tempo increases → notes get closer → last IOI should be noticeably smaller
+        assertTrue(lastIOI < firstIOI * 0.95,
+            "Tempo accelerates from 39→48 BPM, so last IOI (" + lastIOI
+            + ") should be smaller than first IOI (" + firstIOI + ")");
+    }
+
+    private static double[] collectIOIs(Msm msm, double minDate, double maxDate) {
+        Nodes notes = msm.getRootElement().query("descendant::note[@milliseconds.date and @date]");
+        java.util.List<double[]> inRange = new java.util.ArrayList<>();
+        for (int i = 0; i < notes.size(); i++) {
+            Element note = (Element) notes.get(i);
+            double date = Double.parseDouble(note.getAttributeValue("date"));
+            if (date >= minDate && date < maxDate) {
+                double ms = Double.parseDouble(note.getAttributeValue("milliseconds.date"));
+                inRange.add(new double[]{date, ms});
+            }
+        }
+        inRange.sort((a, b) -> Double.compare(a[1], b[1]));
+
+        double[] iois = new double[Math.max(0, inRange.size() - 1)];
+        for (int i = 1; i < inRange.size(); i++) {
+            iois[i - 1] = inRange.get(i)[1] - inRange.get(i - 1)[1];
+        }
+        return iois;
     }
 
     private static int countNoteOns(Sequence seq) {
